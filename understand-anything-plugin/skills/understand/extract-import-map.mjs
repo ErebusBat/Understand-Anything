@@ -24,14 +24,18 @@
  *
  * `files` is always the complete current inventory because import resolution
  * needs it for path/module probes. When `analysisPaths` is present, only those
- * files are read and emitted in `importMap`; omitting it preserves the original
- * full-scan behaviour.
+ * files are emitted in `importMap` and `dependencyMap`. Ruby indexing reads the
+ * full inventory to resolve unchanged declarations/configuration. Omitting
+ * analysisPaths preserves full-scan behaviour.
  *
  * Output JSON:
  *   {
  *     scriptCompleted: true,
  *     stats: { filesScanned, filesWithImports, totalEdges },
- *     importMap: { <path>: [<resolvedPath>, ...], ... }
+ *     importMap: { <path>: [<resolvedPath>, ...], ... },
+ *     dependencyMap: { <path>: [{ target, type, kind, reference?, line? }, ...] },
+ *     dependencyDiagnostics: [{ path, code, message, line? }, ...],
+ *     dependencyResolverVersion: 1
  *   }
  *
  * Logging: stderr only (stdout reserved for piped tools).
@@ -87,7 +91,11 @@ try {
   core = await import(pathToFileURL(resolve(pluginRoot, 'packages/core/dist/index.js')).href);
 }
 
-const { TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers } = core;
+const {
+  TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers,
+  createRubyDependencyResolver, RUBY_DEPENDENCY_RESOLVER_VERSION,
+  extractRailsRouteDependencies,
+} = core;
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -1990,6 +1998,9 @@ async function main() {
       stats: { filesScanned: 0, filesWithImports: 0, totalEdges: 0 },
       failures: [],
       importMap: {},
+      dependencyMap: {},
+      dependencyDiagnostics: [],
+      dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
     };
     writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf-8');
     process.stderr.write(
@@ -2008,11 +2019,12 @@ async function main() {
   // The structural graph will lose import edges, but all OTHER analysis
   // (file inventory, exports inferred from filenames, etc.) keeps working.
   let registry = null;
+  let tsPlugin = null;
   let treeSitterReady = false;
   const failures = [];
   try {
     const tsConfigs = builtinLanguageConfigs.filter(c => c.treeSitter);
-    const tsPlugin = new TreeSitterPlugin(tsConfigs);
+    tsPlugin = new TreeSitterPlugin(tsConfigs);
     await tsPlugin.init();
     registry = new PluginRegistry();
     registry.register(tsPlugin);
@@ -2032,6 +2044,31 @@ async function main() {
   // `buildResolutionContext`.
   const ctx = await buildResolutionContext(projectRoot, files);
   failures.push(...ctx.failures);
+
+  // Ruby constants depend on declarations/configuration in unchanged files.
+  // Build from the complete inventory even when analysisPaths is selective.
+  const rubyResolver = treeSitterReady
+    ? createRubyDependencyResolver({ projectRoot, files, plugin: tsPlugin })
+    : null;
+  if (rubyResolver) failures.push(...rubyResolver.failures);
+  const dependencyMap = {};
+  for (const file of [...analysisFiles].sort((a, b) => comparePaths(a.path, b.path))) {
+    const path = toPosix(file.path);
+    dependencyMap[path] = file.fileCategory === 'code' && path.endsWith('.rb')
+      ? rubyResolver?.getDependencies(path) ?? []
+      : [];
+    if (rubyResolver?.isRails && /(^|\/)config\/routes\.rb$/.test(path) && rubyResolver.sources.has(path)) {
+      const routes = extractRailsRouteDependencies({
+        path, source: rubyResolver.sources.get(path), plugin: tsPlugin, resolver: rubyResolver,
+      });
+      dependencyMap[path] = [...dependencyMap[path], ...routes.dependencies].sort((a, b) =>
+        comparePaths(a.target, b.target) || comparePaths(a.type, b.type)
+        || comparePaths(a.kind, b.kind) || comparePaths(a.reference ?? '', b.reference ?? '')
+        || (a.line ?? 0) - (b.line ?? 0));
+      rubyResolver.diagnostics.push(...routes.diagnostics);
+    }
+  }
+  rubyResolver?.sortDiagnostics();
 
   const importMap = {};
   let filesWithImports = 0;
@@ -2059,7 +2096,17 @@ async function main() {
     // Read file content (per-file resilience)
     let content;
     try {
-      content = readFileSync(absolutePath, 'utf-8');
+      // The Ruby resolver validated both inventory-relative spelling and the
+      // real symlink target. Never bypass a rejected/failed read here.
+      if (path.endsWith('.rb') && rubyResolver) {
+        content = rubyResolver.sources.get(path);
+        if (content === undefined) {
+          importMap[path] = [];
+          continue;
+        }
+      } else {
+        content = readFileSync(absolutePath, 'utf-8');
+      }
     } catch (err) {
       failures.push({ path, stage: 'file-read', message: err.message });
       process.stderr.write(
@@ -2082,7 +2129,7 @@ async function main() {
       if (file.language === 'ruby') {
         for (const imp of parseRubyImports(content)) {
           for (const out of resolveRubyImport(imp, file, ctx)) {
-            if (out && ctx.fileSet.has(out)) resolvedSet.add(out);
+            if (out && ctx.fileSet.has(out) && (!out.endsWith('.rb') || rubyResolver?.sources.has(out))) resolvedSet.add(out);
           }
         }
       } else {
@@ -2138,6 +2185,9 @@ async function main() {
     },
     failures,
     importMap,
+    dependencyMap,
+    dependencyDiagnostics: rubyResolver?.diagnostics ?? [],
+    dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
   };
 
   writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf-8');

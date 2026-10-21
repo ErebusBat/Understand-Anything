@@ -2,7 +2,7 @@
 /**
  * compute-batches.mjs — Phase 1.5 of /understand
  *
- * Reads scan-result.json, runs Louvain community detection on the import
+ * Reads scan-result.json, runs Louvain community detection on the dependency
  * graph, and writes batches.json containing batches + neighborMap.
  *
  * Usage:
@@ -283,6 +283,25 @@ function comparePaths(a, b) {
   return a < b ? -1 : 1;
 }
 
+// Topology uses the union, while analyzer payloads retain explicit imports
+// and typed facts separately. Multiple facts about one target count once.
+function buildConnectionMap(importMap, dependencyMap) {
+  const sources = [...new Set([...Object.keys(importMap), ...Object.keys(dependencyMap)])]
+    .sort(comparePaths);
+  return Object.fromEntries(sources.map(source => [source, [...new Set([
+    ...(importMap[source] || []),
+    ...(dependencyMap[source] || []).map(fact => fact.target),
+  ])].sort(comparePaths)]));
+}
+
+function compareFacts(a, b) {
+  return comparePaths(a.target, b.target)
+    || comparePaths(a.type, b.type)
+    || comparePaths(a.kind, b.kind)
+    || comparePaths(a.reference || '', b.reference || '')
+    || (a.line || 0) - (b.line || 0);
+}
+
 /**
  * Returns Map<path, communityId> via Louvain. May throw — caller must catch
  * and fall back if it does. Honors UA_COMPUTE_BATCHES_FORCE_LOUVAIN_THROW=1
@@ -458,6 +477,8 @@ async function main() {
   const codeFiles = files.filter(f => f.fileCategory === 'code');
   const nonCodeFiles = files.filter(f => f.fileCategory !== 'code');
   const importMap = scan.importMap || {};
+  const dependencyMap = scan.dependencyMap || {};
+  const connectionMap = buildConnectionMap(importMap, dependencyMap);
 
   process.stderr.write(`Loaded ${files.length} files (${codeFiles.length} code).\n`);
 
@@ -466,7 +487,7 @@ async function main() {
   let algorithm = 'louvain';
   let perFileCommunity;
   try {
-    perFileCommunity = runLouvain(codeFiles, importMap);
+    perFileCommunity = runLouvain(codeFiles, connectionMap);
   } catch (err) {
     process.stderr.write(
       `Warning: compute-batches: Louvain failed (${err.message}) ` +
@@ -546,37 +567,39 @@ async function main() {
   const mergedBareBatches = mergeSmallBatches(bareBatches);
   const batchOf = buildBatchOfMap(mergedBareBatches);
 
-  // Build reverse import map: target → [sources that import target]
-  const reverseImportMap = new Map();
-  for (const [src, targets] of Object.entries(importMap)) {
+  // Reverse union: target → sources with an import or typed dependency.
+  const reverseConnectionMap = new Map();
+  for (const [src, targets] of Object.entries(connectionMap)) {
     for (const tgt of targets) {
-      if (!reverseImportMap.has(tgt)) reverseImportMap.set(tgt, []);
-      reverseImportMap.get(tgt).push(src);
+      if (!reverseConnectionMap.has(tgt)) reverseConnectionMap.set(tgt, []);
+      reverseConnectionMap.get(tgt).push(src);
     }
   }
 
-  // Compute neighbor degree (number of import relations) per path, used for
+  // Compute neighbor degree (number of file connections) per path, used for
   // truncation when neighborMap[file] has > MAX_NEIGHBORS entries.
   const NEIGHBOR_DEGREE = new Map();
-  for (const f of codeFiles) {
-    const outDeg = (importMap[f.path] || []).length;
-    const inDeg = (reverseImportMap.get(f.path) || []).length;
+  for (const f of files) {
+    const outDeg = (connectionMap[f.path] || []).length;
+    const inDeg = (reverseConnectionMap.get(f.path) || []).length;
     NEIGHBOR_DEGREE.set(f.path, outDeg + inDeg);
   }
 
   const MAX_NEIGHBORS = 50;
 
-  // Second-pass: enrich each batch with batchImportData + neighborMap.
+  // Second-pass: enrich with both fact payloads and union neighbor context.
   // `analysisFiles` is usually the full batch. In --changed-files mode, it is
   // only the changed target set, while batchOf remains the full-graph lookup.
   const buildBatchPayload = (b, analysisFiles = b.files) => {
     const analysisPaths = new Set(analysisFiles.map(f => f.path));
     const batchImportData = {};
+    const batchDependencyData = {};
     const neighborMap = {};
     for (const f of analysisFiles) {
       batchImportData[f.path] = (importMap[f.path] || []).slice();
+      batchDependencyData[f.path] = (dependencyMap[f.path] || []).slice().sort(compareFacts);
 
-      // 1-hop neighbors: imports out + imported-by in, excluding files already
+      // 1-hop neighbors: union connections out + in, excluding files already
       // emitted for analysis in this payload.
       // Note on truncation: we measure "popularity" by total raw 1-hop neighbor
       // count (rawCount), not kept.length. A widely-imported hub like a logger
@@ -585,11 +608,11 @@ async function main() {
       // while the file is still a high-degree hub whose missing relationships
       // matter for downstream cross-batch edge confidence. Warning on rawCount
       // surfaces this; truncation on kept ensures the JSON stays bounded.
-      const outNeighbors = importMap[f.path] || [];
-      const inNeighbors = reverseImportMap.get(f.path) || [];
+      const outNeighbors = connectionMap[f.path] || [];
+      const inNeighbors = reverseConnectionMap.get(f.path) || [];
       const all = new Set([...outNeighbors, ...inNeighbors]);
       const rawCount = all.size;
-      const filtered = [...all].filter(p => batchOf.has(p) && !analysisPaths.has(p));
+      const filtered = [...all].filter(p => batchOf.has(p) && !analysisPaths.has(p)).sort(comparePaths);
 
       let kept = filtered.map(p => ({
         path: p,
@@ -612,7 +635,7 @@ async function main() {
 
       if (kept.length) neighborMap[f.path] = kept;
     }
-    return { batchIndex: b.batchIndex, files: analysisFiles, batchImportData, neighborMap };
+    return { batchIndex: b.batchIndex, files: analysisFiles, batchImportData, batchDependencyData, neighborMap };
   };
 
   const batches = mergedBareBatches.map(b => buildBatchPayload(b));

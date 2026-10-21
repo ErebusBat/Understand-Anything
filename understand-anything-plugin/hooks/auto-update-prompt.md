@@ -13,7 +13,7 @@ Incrementally update the knowledge graph after a commit. Do not ask the user for
    ```
 
 2. Require `$UA_DIR/knowledge-graph.json` and `$UA_DIR/meta.json`. If either is missing, report that `/understand` must create a baseline and **STOP**.
-3. Read `gitCommitHash` from meta as `$LAST_COMMIT_HASH`; get `$HEAD_COMMIT` with `git rev-parse HEAD`. If they match, report that the graph is current and **STOP**.
+3. Read `gitCommitHash` from meta as `$LAST_COMMIT_HASH`; get `$HEAD_COMMIT` with `git rev-parse HEAD`. Even when they match, continue through preparation so resolver-version changes and missing dependency baselines are checked. The helper's `SKIP` action controls the current-graph exit.
 4. Resolve `$PLUGIN_ROOT` from `$CLAUDE_PLUGIN_ROOT`, then `$DEVIN_PLUGIN_ROOT`, then the parent of the `hooks/` directory containing this prompt file (the path the hook told you to read — this covers Devin plugin installs, whose agent shell has no plugin-root variable), then `$HOME/.understand-anything-plugin`, validating that it contains `skills/understand/prepare-incremental.mjs`. If it cannot be found, report the error and **STOP** without changing metadata.
 5. Ensure core is built, then run the bundled helper with parameterized arguments:
 
@@ -23,7 +23,7 @@ Incrementally update the knowledge graph after a commit. Do not ask the user for
      "$LAST_COMMIT_HASH"
    ```
 
-   The helper is authoritative for `git diff --name-status -z`, renames, spaces, POSIX normalization, the current scan/ignore rules, structural fingerprints, generated artifacts, and selective import-map refresh. Do not recreate or post-filter its decisions.
+   The helper is authoritative for `git diff --name-status -z`, renames, spaces, POSIX normalization, the current scan/ignore rules, structural fingerprints, generated artifacts, and refresh/pruning of explicit imports and typed dependencies. Preserve `dependencyMap`, `dependencyDiagnostics`, and `dependencyResolverVersion` in its scan result. A resolver-version upgrade or Ruby context change can require `PARTIAL_UPDATE` with no analyzer files; still run merge to recover refreshed facts. Do not recreate or post-filter its decisions.
 6. Read `$UA_DIR/intermediate/incremental-plan.json`.
 
    | Action | Required behavior |
@@ -53,7 +53,7 @@ Read `filesToReanalyze` from the plan. It never contains deleted, ignored, cosme
     --changed-files="$UA_DIR/intermediate/changed-files.json"
   ```
 
-  Dispatch file-analyzer for those batches only, using `agents/file-analyzer.md` and the batch prompt contract from the `/understand` skill. Include `previousSymbols` for each batch's files from `incremental-symbol-baseline.json`: old symbol IDs, names, types, paths, line ranges, and class containment. Existing symbols that still exist must survive significance filtering. Preserve each original batch index in its output filename. Retry a failed dispatch once; if it still fails, **STOP** without running the finalizer or advancing the baseline.
+  Dispatch file-analyzer for those batches only, using `agents/file-analyzer.md` and the batch prompt contract from the `/understand` skill. Pass `batchImportData`, `batchDependencyData`, and `neighborMap` unchanged, including empty arrays. Typed facts retain their supplied type, file endpoints, and evidence in `description`; explicit imports remain separate. Include `previousSymbols` for each batch's files from `incremental-symbol-baseline.json`: old symbol IDs, names, types, paths, line ranges, and class containment. Existing symbols that still exist must survive significance filtering. Preserve each original batch index in its output filename. Retry a failed dispatch once; if it still fails, **STOP** without running the finalizer or advancing the baseline.
 
 ## Phase 2 — Merge
 
@@ -63,7 +63,7 @@ Run the deterministic merge in both empty and non-empty analyzer cases:
 python "$PLUGIN_ROOT/skills/understand/merge-batch-graphs.py" "$PROJECT_ROOT"
 ```
 
-It combines `batch-existing.json` with fresh batches and recovers imports from the refreshed `scan-result.json`, including `config:`, `schema:`, `service:`, and other valid whole-file nodes. Require both a successful exit and `$UA_DIR/intermediate/assembled-graph.json`; failed candidates remain on disk for diagnosis.
+It combines `batch-existing.json` with fresh batches and recovers explicit imports and typed dependencies from the refreshed `scan-result.json`, including `config:`, `schema:`, `service:`, and other valid whole-file nodes. Typed recovery preserves fact evidence in `description` and stamps `recoveredFromDependencyMap: true` on recovered and existing matching edges. Require both a successful exit and `$UA_DIR/intermediate/assembled-graph.json`; failed candidates remain on disk for diagnosis.
 
 Merge runs `validate-incremental-symbols.mjs`, comparing the preserved old symbols with the candidate and base/current source. Read `incremental-symbol-report.json` for per-file counts, missing IDs/names, and still-present/deleted/unknown classifications. A same-size node set can still have missing symbols. Confirmed deletions are allowed; still-present or unknown omissions block publication.
 
@@ -77,7 +77,7 @@ If the report has `unresolvedFiles`, prepare one targeted symbol retry:
 node "$PLUGIN_ROOT/skills/understand/prepare-symbol-retry.mjs" "$PROJECT_ROOT"
 ```
 
-Dispatch only `batches[]` from `incremental-symbol-retry.json`, with the usual file-analyzer prompt and its supplied `files`, `batchIndex`, `batchImportData`, `neighborMap`, `previousSymbols`, and `missingSymbols`. Reanalyze those files completely. The helper preserves other merged results in `batch-0.json`, removes affected nodes and outgoing edges, and clears old numeric shards before repair. Current inbound edges from other files remain candidates until merge reconciles their replacement targets and drops dangling references. Rerun merge after this one repair. Never paste old nodes or semantic edges back into the candidate. The attempt is recorded for the base/head commits, even across repeated prepare calls.
+Dispatch only `batches[]` from `incremental-symbol-retry.json`, with the usual file-analyzer prompt and its supplied `files`, `batchIndex`, `batchImportData`, `batchDependencyData`, `neighborMap`, `previousSymbols`, and `missingSymbols`. Reanalyze those files completely. The helper preserves other merged results in `batch-0.json`, removes affected nodes and outgoing edges, and clears old numeric shards before repair. Current inbound edges from other files remain candidates until merge reconciles their replacement targets and drops dangling references. Rerun merge after this one repair. Never paste old nodes or semantic edges back into the candidate. The attempt is recorded for the base/head commits, even across repeated prepare calls.
 
 If the helper, repair dispatch, or second merge fails, **STOP** with diagnostics and leave `knowledge-graph.json`, `fingerprints.json`, and `meta.json` unchanged. Other merge failures without eligible unresolved files also stop immediately.
 
@@ -116,6 +116,7 @@ Report:
 - files structurally analyzed;
 - deleted/ignored/cosmetic/generated counts from the plan;
 - whether architecture/tour ran;
+- dependency diagnostic counts and unsupported/ambiguous resolution limitations (separate from infrastructure failures);
 - output path.
 
 ## Error handling

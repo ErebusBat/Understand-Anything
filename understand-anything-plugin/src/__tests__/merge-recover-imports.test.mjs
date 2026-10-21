@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { GraphEdgeSchema } from "../../packages/core/src/schema.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MERGE_SCRIPT = resolve(__dirname, "../../skills/understand/merge-batch-graphs.py");
@@ -288,6 +289,103 @@ describe("merge-batch-graphs.py imports recovery", () => {
     const { assembled, stderr } = runMerge();
     expect(assembled.edges.filter((edge) => edge.type === 'imports')).toHaveLength(0);
     expect(stderr).toContain('no whole-file node in graph');
+  });
+});
+
+describe('merge-batch-graphs.py typed dependency recovery', () => {
+  const source = 'app/models/user.rb';
+  const target = 'app/models/account.rb';
+  function seed(dependencyMap, nodes = [fileNode(source), fileNode(target)], edges = [], importMap = {}) {
+    writeFileSync(join(intermediateDir, 'batch-0.json'), JSON.stringify({ nodes, edges }));
+    writeFileSync(join(intermediateDir, 'scan-result.json'), JSON.stringify({ importMap, dependencyMap }));
+  }
+
+  it('recovers supplied types without inventing imports and preserves schema-safe evidence', () => {
+    seed({ [source]: [
+      { target, type: 'depends_on', kind: 'association', reference: 'Account', line: 8 },
+      { target, type: 'inherits', kind: 'superclass', reference: 'Account', line: 1 },
+    ] });
+    const { assembled } = runMerge();
+    expect(assembled.edges.map(edge => edge.type).sort()).toEqual(['depends_on', 'inherits']);
+    for (const edge of assembled.edges) {
+      expect(edge).toMatchObject({ source: `file:${source}`, target: `file:${target}`, direction: 'forward', recoveredFromDependencyMap: true });
+      const validated = GraphEdgeSchema.parse(edge);
+      expect(validated.description).toContain('Account');
+      expect(validated.description).toContain('line');
+      expect(validated).not.toHaveProperty('recoveredFromDependencyMap');
+    }
+  });
+
+  it('deduplicates facts and stamps existing matching batch edges for pruning', () => {
+    const facts = [
+      { target, type: 'depends_on', kind: 'constant', reference: 'Account', line: 12 },
+      { target, type: 'depends_on', kind: 'association', reference: 'Account', line: 8 },
+    ];
+    seed({ [source]: [facts[0], facts[1], facts[0]] }, undefined, [
+      { ...importsEdge(source, target), type: 'depends_on', weight: 0.8, description: 'Uses account.' },
+    ], { [source]: [target] });
+    const { assembled, stderr } = runMerge();
+    expect(stderr).toContain('Recovered 0 typed edges');
+    expect(assembled.edges).toHaveLength(2);
+    expect(assembled.edges.filter(edge => edge.type === 'imports')).toHaveLength(1);
+    const edge = assembled.edges.find(edge => edge.type === 'depends_on');
+    expect(edge.recoveredFromDependencyMap).toBe(true);
+    expect(edge.weight).toBe(0.8);
+    expect(edge.dependencyEvidence).toEqual([
+      { kind: 'association', reference: 'Account', line: 8 },
+      { kind: 'constant', reference: 'Account', line: 12 },
+    ]);
+    expect(edge.description).toBe('Uses account.\nResolved dependency facts: association Account (line 8); constant Account (line 12).');
+    // Running recovery over its own output neither duplicates evidence nor edges.
+    writeFileSync(join(intermediateDir, 'batch-0.json'), JSON.stringify(assembled));
+    expect(runMerge().assembled).toEqual(assembled);
+  });
+
+  it('is stable under shuffled map and fact ordering', () => {
+    const facts = [
+      { target, type: 'depends_on', kind: 'extend', reference: 'Account', line: 10 },
+      { target, type: 'depends_on', kind: 'include', reference: 'Account', line: 2 },
+      { target, type: 'inherits', kind: 'superclass', line: 1 },
+    ];
+    const reverse = { target: source, type: 'depends_on', kind: 'constant' };
+    seed({ [target]: [reverse], [source]: facts });
+    const first = runMerge().assembled;
+    seed({ [source]: facts.slice().reverse(), [target]: [reverse] });
+    expect(runMerge().assembled).toEqual(first);
+  });
+
+  it('skips missing source/target endpoints, child constructs, self edges, and invalid types', () => {
+    seed({
+      'app/models/missing.rb': [{ target, type: 'depends_on', kind: 'constant' }],
+      [source]: [
+        { target: 'app/models/missing.rb', type: 'depends_on', kind: 'constant' },
+        { target, type: 'depends_on', kind: 'constant' },
+        { target: source, type: 'inherits', kind: 'superclass' },
+        { target: source, type: 'imports', kind: 'constant' },
+      ],
+    }, [fileNode(source), { ...fileNode(target), id: `class:${target}:Account`, type: 'class' }]);
+    const { assembled, stderr } = runMerge();
+    expect(assembled.edges).toEqual([]);
+    expect(stderr).toContain('Skipped 1 dependencyMap source files');
+    expect(stderr).toContain('Skipped 2 dependencyMap target facts');
+  });
+
+  it('uses whole-file config endpoints for typed routes', () => {
+    const routes = 'config/routes.rb';
+    seed({ [routes]: [{ target, type: 'routes', kind: 'route', reference: 'accounts#index', line: 2 }] },
+      [wholeFileNode('config', routes), fileNode(target)]);
+    const { assembled } = runMerge();
+    expect(assembled.edges).toEqual([expect.objectContaining({
+      source: `config:${routes}`, target: `file:${target}`, type: 'routes',
+      description: 'Resolved dependency facts: route accounts#index (line 2).',
+    })]);
+  });
+
+  it('accepts empty maps and empty fact arrays', () => {
+    for (const dependencyMap of [{}, { [source]: [], [target]: [] }]) {
+      seed(dependencyMap);
+      expect(runMerge().assembled.edges).toEqual([]);
+    }
   });
 });
 

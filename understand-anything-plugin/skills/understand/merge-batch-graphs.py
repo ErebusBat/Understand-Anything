@@ -402,6 +402,51 @@ def _js_ts_sibling_candidates(dir_path: str, base_stem: str) -> list[str]:
     return [_join(dir_path, f"{base_stem}{e}") for e in _JS_TS_EXTS]
 
 
+def _ruby_production_candidates(test_path: str) -> list[str]:
+    """Conservative Rails/gem conventions, preserving engine and Ruby namespaces."""
+    segments = _path_segments(test_path)
+    stem, ext = os.path.splitext(segments[-1])
+    if ext != ".rb":
+        return []
+    base = None
+    for suffix in ("_test", "_spec"):
+        if stem.endswith(suffix):
+            base = stem[:-len(suffix)]
+            break
+    if base is None and stem.startswith("test_"):
+        base = stem[len("test_"):]
+    if not base or base == "helper" or base.endswith("_helper"):
+        return []
+
+    # The first test root establishes the project/engine boundary. Never
+    # strip a namespace or search a different engine for a same-named file.
+    root = next((i for i, part in enumerate(segments[:-1]) if part in ("test", "spec")), None)
+    if root is None:
+        return []
+    prefix = segments[:root]
+    tail = segments[root + 1:-1]
+    excluded = {
+        "helper", "helpers", "support", "shared", "shared_examples", "shared_contexts",
+        "request", "requests", "system", "integration", "api", "features",
+        "fixtures", "factories", "dummy", "test", "spec",
+    }
+    if any(part in excluded for part in tail):
+        return []
+    rails_units = {
+        "models", "controllers", "services", "jobs", "mailers", "channels",
+        "validators", "serializers", "presenters", "decorators", "policies",
+        "workers", "forms", "queries", "components",
+    }
+    if tail and tail[0] in rails_units:
+        target = [*prefix, "app", *tail, f"{base}.rb"]
+    else:
+        # spec/lib/acme/parser_spec.rb and spec/acme/parser_spec.rb both
+        # map to lib/acme/parser.rb. Existence is checked by link_tests.
+        lib_tail = tail[1:] if tail and tail[0] == "lib" else tail
+        target = [*prefix, "lib", *lib_tail, f"{base}.rb"]
+    return ["/".join(target)]
+
+
 def production_candidates(test_path: str) -> list[str]:
     """For a test file path, return ordered candidate production paths.
 
@@ -416,6 +461,9 @@ def production_candidates(test_path: str) -> list[str]:
     dir_path = "/".join(dir_segs)
 
     candidates: list[str] = []
+
+    if ext == ".rb":
+        return _ruby_production_candidates(test_path)
 
     # ── JS/TS family ──────────────────────────────────────────────────
     if ext in _JS_TS_TEST_EXTS:
@@ -1149,6 +1197,109 @@ def recover_imports_from_scan(
     return recovered, lines
 
 
+DEPENDENCY_WEIGHTS = {"depends_on": 0.6, "inherits": 0.9, "routes": 0.6}
+
+
+def recover_dependencies_from_scan(
+    assembled: dict[str, Any],
+    scan_result_path: Path,
+) -> tuple[int, list[str]]:
+    """Restore typed file dependencies and attribute existing matching edges.
+
+    Evidence is also rendered in description because schema validation strips
+    custom properties. The raw marker supports incremental pruning before that
+    validation. Multiple facts for one source/target/type share one edge.
+    """
+    if not scan_result_path.is_file():
+        return 0, [f"  dependencyMap recovery skipped — {scan_result_path.name} not found"]
+    try:
+        scan = json.loads(scan_result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return 0, [f"  dependencyMap recovery skipped — could not parse {scan_result_path.name}: {error}"]
+    dependency_map = scan.get("dependencyMap")
+    if not isinstance(dependency_map, dict):
+        return 0, [f"  dependencyMap recovery skipped — no dependencyMap field in {scan_result_path.name}"]
+
+    node_index, lines = build_whole_file_node_index(assembled["nodes"])
+    existing = {
+        (edge.get("source"), edge.get("target"), edge.get("type")): edge
+        for edge in assembled["edges"]
+        if normalize_direction(edge.get("direction")) == "forward"
+    }
+    recovered = 0
+    skipped_source = 0
+    skipped_target = 0
+    for source_path, facts in sorted(dependency_map.items()):
+        if not isinstance(facts, list):
+            continue
+        source = node_index.get(source_path)
+        if source is None:
+            skipped_source += bool(facts)
+            continue
+        grouped: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            target_path, edge_type, kind = fact.get("target"), fact.get("type"), fact.get("kind")
+            if (
+                not isinstance(target_path, str) or not target_path
+                or not isinstance(edge_type, str) or edge_type not in DEPENDENCY_WEIGHTS
+                or not isinstance(kind, str) or not kind
+            ):
+                continue
+            target = node_index.get(target_path)
+            if target is None:
+                skipped_target += 1
+                continue
+            if source == target:
+                continue
+            evidence = {"kind": kind}
+            if isinstance(fact.get("reference"), str):
+                evidence["reference"] = fact["reference"]
+            if type(fact.get("line")) is int and fact["line"] > 0:
+                evidence["line"] = fact["line"]
+            serialized = json.dumps(evidence, sort_keys=True, ensure_ascii=False)
+            grouped.setdefault((target, edge_type), {})[serialized] = evidence
+
+        for (target, edge_type), evidence_by_key in sorted(grouped.items()):
+            evidence = sorted(evidence_by_key.values(), key=lambda item: (
+                item["kind"], item.get("reference", ""), item.get("line", 0),
+            ))
+            key = (source, target, edge_type)
+            edge = existing.get(key)
+            if edge is None:
+                edge = {
+                    "source": source, "target": target, "type": edge_type,
+                    "direction": "forward", "weight": DEPENDENCY_WEIGHTS[edge_type],
+                }
+                assembled["edges"].append(edge)
+                existing[key] = edge
+                recovered += 1
+            edge["recoveredFromDependencyMap"] = True
+            edge["dependencyEvidence"] = evidence
+            details = []
+            for item in evidence:
+                detail = item["kind"]
+                if "reference" in item:
+                    detail += f" {item['reference']}"
+                if "line" in item:
+                    detail += f" (line {item['line']})"
+                details.append(detail)
+            description = "Resolved dependency facts: " + "; ".join(details) + "."
+            previous = edge.get("description")
+            if isinstance(previous, str) and previous and description not in previous:
+                edge["description"] = previous + "\n" + description
+            elif not isinstance(previous, str) or not previous:
+                edge["description"] = description
+
+    lines.append(f"  Recovered {recovered} typed edges from dependencyMap ({len(dependency_map)} entries scanned)")
+    if skipped_source:
+        lines.append(f"  Skipped {skipped_source} dependencyMap source files with no whole-file node in graph")
+    if skipped_target:
+        lines.append(f"  Skipped {skipped_target} dependencyMap target facts with no whole-file node in graph")
+    return recovered, lines
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1331,6 +1482,12 @@ def main() -> None:
         report.append("")
         report.append("Imports edge recovery:")
         report.extend(recovery_report)
+
+    _, dependency_report = recover_dependencies_from_scan(assembled, scan_result_path)
+    if dependency_report:
+        report.append("")
+        report.append("Typed dependency edge recovery:")
+        report.extend(dependency_report)
 
     # Print report
     print("", file=sys.stderr)

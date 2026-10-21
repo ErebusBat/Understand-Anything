@@ -352,6 +352,67 @@ class ProductionCandidatesTests(unittest.TestCase):
 
 # ── link_tests (end-to-end) ───────────────────────────────────────────────
 
+class RubyPairingTests(unittest.TestCase):
+    def test_rails_and_gem_paths_preserve_namespaces_and_direction(self) -> None:
+        pairs = [
+            ("test/models/user_test.rb", "app/models/user.rb"),
+            ("spec/models/admin/user_spec.rb", "app/models/admin/user.rb"),
+            ("test/controllers/admin/users_controller_test.rb", "app/controllers/admin/users_controller.rb"),
+            ("spec/services/billing/charge_spec.rb", "app/services/billing/charge.rb"),
+            ("test/jobs/export_job_test.rb", "app/jobs/export_job.rb"),
+            ("spec/mailers/report_mailer_spec.rb", "app/mailers/report_mailer.rb"),
+            ("test/acme/test_parser.rb", "lib/acme/parser.rb"),
+            ("spec/lib/acme/parser_spec.rb", "lib/acme/parser.rb"),
+            ("spec/acme/parser_spec.rb", "lib/acme/parser.rb"),
+            ("test/parser_test.rb", "lib/parser.rb"),
+            ("engines/shop/test/models/shop/cart_test.rb", "engines/shop/app/models/shop/cart.rb"),
+            ("engines/shop/spec/controllers/shop/carts_controller_spec.rb", "engines/shop/app/controllers/shop/carts_controller.rb"),
+            ("gems/acme/spec/acme/parser_spec.rb", "gems/acme/lib/acme/parser.rb"),
+        ]
+        for test, production in pairs:
+            with self.subTest(test=test):
+                self.assertEqual(mbg.production_candidates(test), [production])
+                nodes = {f"file:{path}": _file_node(path) for path in (test, production)}
+                edges: list[dict[str, Any]] = []
+                self.assertEqual(mbg.link_tests(nodes, edges), (1, 0, 1, 0))
+                self.assertEqual(edges[0]["source"], f"file:{production}")
+                self.assertEqual(edges[0]["target"], f"file:{test}")
+                self.assertEqual(edges[0]["direction"], "forward")
+
+    def test_excludes_helpers_shared_examples_and_broad_feature_tests(self) -> None:
+        paths = [
+            "test/test_helper.rb", "spec/spec_helper.rb", "spec/rails_helper.rb",
+            "spec/helper_spec.rb", "test/helpers/user_helper_test.rb",
+            "spec/shared/user_spec.rb", "spec/shared_examples/user_spec.rb",
+            "spec/shared_contexts/user_spec.rb", "spec/support/user_spec.rb",
+            "spec/requests/user_spec.rb", "test/system/user_test.rb",
+            "test/integration/user_test.rb", "spec/api/user_spec.rb",
+            "spec/features/user_spec.rb", "test/fixtures/user_test.rb",
+            "engines/shop/spec/dummy/spec/models/user_spec.rb",
+            "app/models/user_spec.rb", "spec/models/user.rb",
+        ]
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertEqual(mbg.production_candidates(path), [])
+
+    def test_missing_exact_target_does_not_fall_back_across_engines_or_namespaces(self) -> None:
+        test = "engines/shop/spec/models/shop/user_spec.rb"
+        paths = [test, "app/models/shop/user.rb", "engines/blog/app/models/shop/user.rb",
+                 "engines/shop/app/models/user.rb", "engines/shop/lib/models/shop/user.rb"]
+        nodes = {f"file:{path}": _file_node(path) for path in paths}
+        edges: list[dict[str, Any]] = []
+        self.assertEqual(mbg.link_tests(nodes, edges), (0, 0, 0, 0))
+        self.assertEqual(edges, [])
+
+    def test_excluded_tests_do_not_pair_even_when_a_mirrored_target_exists(self) -> None:
+        for category in ("requests", "integration", "system", "helpers", "shared_examples"):
+            paths = [f"spec/{category}/user_spec.rb", f"app/{category}/user.rb", f"lib/{category}/user.rb"]
+            nodes = {f"file:{path}": _file_node(path) for path in paths}
+            edges: list[dict[str, Any]] = []
+            self.assertEqual(mbg.link_tests(nodes, edges), (0, 0, 0, 0))
+            self.assertEqual(edges, [])
+
+
 class LinkTestsTests(unittest.TestCase):
     """End-to-end behaviour of the linker against a node/edge set."""
 

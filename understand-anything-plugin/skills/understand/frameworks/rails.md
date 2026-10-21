@@ -33,11 +33,13 @@ When analyzing a Ruby on Rails project, apply these additional conventions on to
 
 ### Edge Patterns to Look For
 
-**Route-to-controller mapping** — When `config/routes.rb` defines `resources :users` or `get '/foo', to: 'bar#baz'`, create `configures` edges from the routes file to the corresponding controller. RESTful resources generate a full set of action mappings.
+**Deterministic dependencies** — Transcribe `batchDependencyData` as specified by the base file-analyzer contract. Its file-level facts distinguish `depends_on`, `inherits`, and `routes`; explicit `require` edges remain in `batchImportData`. Preserve source evidence in edge descriptions. Treat resolver diagnostics as limitations rather than invitations to guess missing targets.
 
-**ActiveRecord associations** — When models define `has_many`, `belongs_to`, `has_one`, or `has_and_belongs_to_many`, create `depends_on` edges between model files with descriptions indicating the association type and direction.
+**Route-to-controller mapping** — Supplied `routes` facts connect `config/routes.rb` to existing controller files. The static subset accepts literal HTTP routes and option-free `resources`/`resource` statements directly inside the application's `routes.draw` block. Nested scopes, mounts, conditions and drawn files require additional evidence; do not flatten them into top-level routes. A route declaration alone does not establish a local action-method node.
 
-**Controller-to-model** — When a controller calls model methods (`User.find`, `@post.save`), create `depends_on` edges from the controller to the model. Controllers are the primary consumers of model data.
+**ActiveRecord associations** — Supplied direct `has_many`, `belongs_to`, `has_one`, and `has_and_belongs_to_many` facts use `depends_on` between model files and identify the macro in the description. Polymorphic `belongs_to`, `through`, and dynamic options do not establish a definite target. Association facts do not establish method-call edges or HABTM join-model nodes.
+
+**Constants and mixins** — Constant resolution uses lexical scopes and configured autoload roots. A unique basename elsewhere in the project is insufficient. `include` and `extend` facts use `depends_on` with distinct evidence; superclass facts use `inherits`. `User.find` can establish a dependency on User's file without establishing a local `find` method. An instance variable such as `@post` needs independent type evidence before connecting it to a model.
 
 **Callbacks** — When models or controllers use `before_action`, `after_save`, `before_validation`, or similar callbacks, note these as middleware-like edges. Callbacks create implicit execution paths that are not visible from the call site.
 

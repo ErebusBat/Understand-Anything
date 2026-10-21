@@ -57,11 +57,13 @@ const {
   classifyUpdate,
   createIgnoreFilter,
   resolveUaDir,
+  RUBY_DEPENDENCY_RESOLVER_VERSION,
 } = core;
 
 const SCAN_SCRIPT = join(__dirname, 'scan-project.mjs');
 const IMPORT_SCRIPT = join(__dirname, 'extract-import-map.mjs');
 const GENERATED_ROOTS = new Set(['.ua', '.understand-anything']);
+const DEPENDENCY_TYPES = new Set(['depends_on', 'inherits', 'routes']);
 const WHOLE_FILE_TYPES = new Set([
   'file',
   'config',
@@ -99,6 +101,38 @@ function isImportResolverConfig(path) {
     || name === 'go.mod'
     || name === 'composer.json'
     || name === 'Package.swift';
+}
+
+function isRubyPath(path) {
+  return /\.(?:rb|rake)$/.test(path) || /(?:^|\/)(?:Gemfile|Rakefile)$/.test(path);
+}
+
+function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths, inventoryChanged, forceRefresh = false }) {
+  const rubyPaths = currentScan.files
+    .filter(file => file.language === 'ruby' || isRubyPath(file.path))
+    .map(file => file.path);
+  const currentPaths = new Set(currentScan.files.map(file => file.path));
+  const previousFactSources = Object.entries(previousScan?.dependencyMap ?? {})
+    .filter(([, facts]) => Array.isArray(facts) && facts.length > 0)
+    .map(([path]) => path);
+  const recoveredSourceIds = new Set((graph?.edges ?? [])
+    .filter(edge => DEPENDENCY_TYPES.has(edge.type) && edge.recoveredFromDependencyMap === true)
+    .map(edge => edge.source));
+  previousFactSources.push(...(graph?.nodes ?? [])
+    .filter(node => recoveredSourceIds.has(node.id) && WHOLE_FILE_TYPES.has(node.type))
+    .map(node => node.filePath));
+  const candidates = sorted([...rubyPaths, ...previousFactSources].filter(path => currentPaths.has(path)));
+  const candidatePaths = new Set(candidates);
+  const versionChanged = previousScan?.dependencyResolverVersion !== RUBY_DEPENDENCY_RESOLVER_VERSION;
+  const missingEntries = rubyPaths.some(path => !Array.isArray(previousScan?.dependencyMap?.[path]));
+  // A declaration, association, root, or inflection can change resolution in
+  // an unchanged consumer. Fingerprint STRUCTURAL/COSMETIC is not sufficient.
+  const contextChanged = inventoryChanged || changedPaths.some(isRubyPath)
+    || changedPaths.some(path => candidatePaths.has(path));
+  return {
+    versionChanged,
+    paths: forceRefresh || versionChanged || missingEntries || contextChanged ? candidates : [],
+  };
 }
 
 function readJson(path, fallback = null) {
@@ -387,9 +421,76 @@ function runScan(projectRoot, outputPath, excludePatterns) {
   return readJson(outputPath);
 }
 
-function refreshImportMap({ projectRoot, intermediateDir, previousScan, currentScan, analysisPaths }) {
+function refreshDependencyData({ previousScan, currentScan, extraction, refreshPaths, diagnosticRefreshPaths = refreshPaths }) {
+  const currentPaths = new Set(currentScan.files.map(file => file.path));
+  const refreshedPaths = new Set(refreshPaths);
+  const refreshedDiagnostics = new Set(diagnosticRefreshPaths);
+  const contextRefreshed = diagnosticRefreshPaths.length > 0 || currentPaths.size === 0;
+  if (refreshedPaths.size > 0) {
+    if (!Number.isInteger(RUBY_DEPENDENCY_RESOLVER_VERSION)
+      || extraction?.dependencyResolverVersion !== RUBY_DEPENDENCY_RESOLVER_VERSION) {
+      throw new Error('Dependency extraction resolver version is missing or incompatible; rebuild core and refresh');
+    }
+    for (const path of refreshedPaths) {
+      if (!Array.isArray(extraction?.dependencyMap?.[path])) {
+        throw new Error(`Dependency extraction omitted refreshed source: ${path}`);
+      }
+    }
+    if (!Array.isArray(extraction?.dependencyDiagnostics)) {
+      throw new Error('Dependency extraction diagnostics are missing or invalid');
+    }
+  }
+  const dependencyMap = {};
+  for (const path of sorted(currentPaths)) {
+    // An empty refreshed entry is authoritative: never merge old facts back in.
+    const candidate = refreshedPaths.has(path)
+      ? extraction?.dependencyMap?.[path]
+      : previousScan?.dependencyMap?.[path];
+    const facts = new Map();
+    for (const fact of Array.isArray(candidate) ? candidate : []) {
+      const target = normalizeRelativePath(fact?.target);
+      if (!target || target === path || !currentPaths.has(target)
+        || !DEPENDENCY_TYPES.has(fact.type) || typeof fact.kind !== 'string') continue;
+      const normalized = { target, type: fact.type, kind: fact.kind };
+      if (typeof fact.reference === 'string') normalized.reference = fact.reference;
+      if (Number.isInteger(fact.line) && fact.line > 0) normalized.line = fact.line;
+      facts.set(JSON.stringify(normalized), normalized);
+    }
+    dependencyMap[path] = [...facts].sort(([a], [b]) => comparePaths(a, b)).map(([, fact]) => fact);
+  }
+
+  // Nonempty extraction rebuilds project context; empty analysisPaths returns
+  // immediately. Replace global diagnostics only when that context was read.
+  // Retain per-file diagnostics only for untouched current files.
+  // Unsupported/ambiguous syntax is evidence, not an extraction failure.
+  const diagnostics = new Map();
+  const previousDiagnostics = Array.isArray(previousScan?.dependencyDiagnostics)
+    ? previousScan.dependencyDiagnostics : [];
+  const extractedDiagnostics = Array.isArray(extraction?.dependencyDiagnostics)
+    ? extraction.dependencyDiagnostics : [];
+  for (const diagnostic of [
+    ...previousDiagnostics.filter(diagnostic => diagnostic?.path === null
+      ? !contextRefreshed : !refreshedDiagnostics.has(diagnostic?.path)),
+    ...extractedDiagnostics,
+  ]) {
+    if (!diagnostic || typeof diagnostic.code !== 'string' || typeof diagnostic.message !== 'string') continue;
+    const path = diagnostic.path === null ? null : normalizeRelativePath(diagnostic.path);
+    if (diagnostic.path !== null && (!path || !currentPaths.has(path))) continue;
+    const normalized = { path, code: diagnostic.code, message: diagnostic.message };
+    if (Number.isInteger(diagnostic.line) && diagnostic.line > 0) normalized.line = diagnostic.line;
+    diagnostics.set(JSON.stringify(normalized), normalized);
+  }
+  return {
+    dependencyMap,
+    dependencyDiagnostics: [...diagnostics].sort(([a], [b]) => comparePaths(a, b)).map(([, value]) => value),
+    dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
+  };
+}
+
+function refreshResolutionMaps({ projectRoot, intermediateDir, previousScan, currentScan, importAnalysisPaths, dependencyAnalysisPaths }) {
   const inputPath = join(intermediateDir, 'incremental-import-input.json');
   const outputPath = join(intermediateDir, 'incremental-import-output.json');
+  const analysisPaths = sorted([...importAnalysisPaths, ...dependencyAnalysisPaths]);
   atomicWriteJson(inputPath, {
     projectRoot,
     files: currentScan.files,
@@ -408,22 +509,44 @@ function refreshImportMap({ projectRoot, intermediateDir, previousScan, currentS
   }
   const selective = extraction?.importMap ?? {};
   const currentPaths = new Set(currentScan.files.map(file => file.path));
+  const importPaths = new Set(importAnalysisPaths);
   const importMap = {};
   for (const file of currentScan.files) {
     const path = file.path;
-    const candidate = Object.hasOwn(selective, path)
+    const candidate = importPaths.has(path) && Object.hasOwn(selective, path)
       ? selective[path]
       : previousScan?.importMap?.[path];
     importMap[path] = Array.isArray(candidate)
       ? sorted(candidate.filter(target => typeof target === 'string' && currentPaths.has(target)))
       : [];
   }
-  return importMap;
+  return {
+    importMap,
+    ...refreshDependencyData({ previousScan, currentScan, extraction,
+      refreshPaths: dependencyAnalysisPaths, diagnosticRefreshPaths: analysisPaths }),
+  };
 }
 
-function pruneExistingGraph(graph, pathsToReplace, importPathsToRefresh = new Set()) {
+function pruneExistingGraph(graph, pathsToReplace, importPathsToRefresh = new Set(), dependencyPathsToRefresh = new Set(), previousDependencyMap = {}) {
   const removedNodeIds = new Set();
   const refreshedImportSourceIds = new Set();
+  const filePathById = new Map((graph?.nodes ?? [])
+    .filter(node => WHOLE_FILE_TYPES.has(node.type)
+      && node.id === `${node.type}:${normalizeRelativePath(node.filePath)}`)
+    .map(node => [node.id, normalizeRelativePath(node.filePath)]));
+  const previousFacts = new Set(Object.entries(previousDependencyMap).flatMap(([source, facts]) =>
+    (Array.isArray(facts) ? facts : [])
+      .filter(fact => DEPENDENCY_TYPES.has(fact?.type))
+      .map(fact => JSON.stringify([source, fact.target, fact.type])),
+  ));
+  function isRefreshedDependency(edge) {
+    const source = filePathById.get(edge.source);
+    const target = filePathById.get(edge.target);
+    return source && target && dependencyPathsToRefresh.has(source)
+      && DEPENDENCY_TYPES.has(edge.type)
+      && (edge.recoveredFromDependencyMap === true
+        || previousFacts.has(JSON.stringify([source, target, edge.type])));
+  }
   const nodes = [];
   for (const node of graph?.nodes ?? []) {
     const path = normalizeRelativePath(node?.filePath);
@@ -446,6 +569,7 @@ function pruneExistingGraph(graph, pathsToReplace, importPathsToRefresh = new Se
       !removedNodeIds.has(edge.source)
       && !removedNodeIds.has(edge.target)
       && !(edge.type === 'imports' && refreshedImportSourceIds.has(edge.source))
+      && !isRefreshedDependency(edge)
       && retainedIds.has(edge.source)
       && retainedIds.has(edge.target),
   );
@@ -629,12 +753,34 @@ async function main() {
   const importAnalysisPaths = importResolutionContextChanged
     ? currentInventory
     : sorted([...currentChangedPaths, ...missingImportEntries]);
-  const importMap = refreshImportMap({
+  const dependencyRefresh = dependencyRefreshPaths({
+    previousScan: baselineScan,
+    currentScan,
+    graph: baselineGraph,
+    changedPaths: nonGeneratedDiffPaths,
+    inventoryChanged: analysis.newFiles.length > 0 || deletedFiles.length > 0,
+    // A failed finalization may have published a newer graph before saving
+    // fingerprints/meta. Re-enter merge from the immutable graph baseline;
+    // SKIP would otherwise leave that abandoned head's typed edges in place.
+    forceRefresh: decision.action === 'FULL_UPDATE'
+      || Boolean(graph?.project?.gitCommitHash && graph.project.gitCommitHash !== baseCommit),
+  });
+  // SKIP finalization handles imports only. Typed facts must pass through the
+  // deterministic merge, even when Ruby fingerprints report cosmetic changes
+  // or the only change is an upgrade of the resolver on an unchanged commit.
+  if (decision.action === 'SKIP' && dependencyRefresh.paths.length > 0) {
+    decision.action = 'PARTIAL_UPDATE';
+    decision.reason = dependencyRefresh.versionChanged
+      ? 'Ruby dependency resolver version changed; refresh deterministic facts'
+      : 'Ruby dependency context changed; refresh deterministic facts';
+  }
+  const resolutionMaps = refreshResolutionMaps({
     projectRoot,
     intermediateDir,
     previousScan: baselineScan,
     currentScan,
-    analysisPaths: importAnalysisPaths,
+    importAnalysisPaths,
+    dependencyAnalysisPaths: dependencyRefresh.paths,
   });
 
   const refreshedScan = {
@@ -644,7 +790,7 @@ async function main() {
     totalFiles: currentScan.totalFiles,
     filteredByIgnore: currentScan.filteredByIgnore,
     estimatedComplexity: currentScan.estimatedComplexity,
-    importMap,
+    ...resolutionMaps,
   };
   delete refreshedScan.scriptCompleted;
   delete refreshedScan.stats;
@@ -653,10 +799,10 @@ async function main() {
   if (!Array.isArray(refreshedScan.languages)) refreshedScan.languages = [];
   if (!Array.isArray(refreshedScan.frameworks)) refreshedScan.frameworks = [];
 
-  // Generated-only commits intentionally keep every baseline artifact tied to
-  // the last analyzed source commit. Other zero-token paths still refresh the
-  // deterministic scan so cosmetic line counts and ignore changes are saved.
-  if (!onlyGeneratedArtifacts) atomicWriteJson(scanPath, refreshedScan);
+  // Generated-only commits keep the source baseline unless a resolver upgrade
+  // requires a deterministic merge. Other zero-token paths still refresh the
+  // scan so cosmetic line counts and ignore changes are saved.
+  if (!onlyGeneratedArtifacts || dependencyRefresh.paths.length > 0) atomicWriteJson(scanPath, refreshedScan);
 
   const plan = {
     baseCommit,
@@ -668,6 +814,9 @@ async function main() {
     ignoredFiles,
     generatedArtifactFiles,
     importMapRefreshPaths: importAnalysisPaths,
+    dependencyMapRefreshPaths: dependencyRefresh.paths,
+    dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
+    dependencyResolverVersionChanged: dependencyRefresh.versionChanged,
     rerunArchitecture: decision.rerunArchitecture,
     rerunTour: decision.rerunTour,
     reason: decision.reason,
@@ -714,7 +863,8 @@ async function main() {
     const pathsToReplace = new Set([...filesToReanalyze, ...deletedFiles]);
     atomicWriteJson(
       join(intermediateDir, 'batch-existing.json'),
-      pruneExistingGraph(baselineGraph, pathsToReplace, new Set(importAnalysisPaths)),
+      pruneExistingGraph(baselineGraph, pathsToReplace, new Set(importAnalysisPaths),
+        new Set(dependencyRefresh.paths), baselineScan?.dependencyMap ?? {}),
     );
   }
   atomicWriteJson(join(intermediateDir, 'incremental-plan.json'), plan);
@@ -747,6 +897,8 @@ if (isCliEntry()) {
 export {
   isGeneratedArtifact,
   isImportResolverConfig,
+  dependencyRefreshPaths,
+  refreshDependencyData,
   normalizeRelativePath,
   relevantWorktreeChanges,
   parseNameStatusZ,

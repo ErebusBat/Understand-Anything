@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -1350,6 +1350,73 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
       'app/helpers/auth.rb',
       'lib/shared/logger.rb',
     ]);
+    expect(result.output.dependencyMap).toEqual({
+      'app/controllers/users_controller.rb': [],
+      'app/helpers/auth.rb': [],
+      'lib/shared/logger.rb': [],
+    });
+    expect(result.output.dependencyResolverVersion).toBe(1);
+  });
+
+  it('keeps explicit imports separate from typed Rails facts in full and selective scans', () => {
+    const source = {
+      'config/application.rb': 'module Demo; class Application < Rails::Application; end; end',
+      'app/models/application_record.rb': 'class ApplicationRecord < ActiveRecord::Base; end',
+      'app/models/person.rb': 'class Person < ApplicationRecord; end',
+      'app/models/team.rb': "require_relative 'person'\nclass Team < ApplicationRecord; has_many :people; end",
+      'app/services/unrelated.rb': 'class Unrelated; Person.find; end',
+      'README.md': '# Rails sample',
+    };
+    projectRoot = setupTree(source);
+    const files = Object.keys(source).map(path => ({path,language:path.endsWith('.rb')?'ruby':'markdown',fileCategory:path.endsWith('.rb')?'code':'docs'}));
+    const full = runScript(projectRoot,{projectRoot,files});
+    const selective = runScript(projectRoot,{projectRoot,files:[...files].reverse(),analysisPaths:['app/models/team.rb','README.md']});
+    expect(full.status,full.stderr).toBe(0);
+    expect(selective.status,selective.stderr).toBe(0);
+    expect(full.output.failures).toEqual([]);
+    expect(full.output.importMap['app/models/team.rb']).toEqual(['app/models/person.rb']);
+    expect(full.output.dependencyMap['app/models/team.rb']).toEqual([
+      expect.objectContaining({target:'app/models/application_record.rb',type:'inherits',kind:'superclass'}),
+      expect.objectContaining({target:'app/models/person.rb',type:'depends_on',kind:'association',reference:'has_many :people => Person'}),
+    ]);
+    expect(selective.output.dependencyMap).toEqual({
+      'README.md': [],
+      'app/models/team.rb': full.output.dependencyMap['app/models/team.rb'],
+    });
+    expect(selective.output.dependencyResolverVersion).toBe(1);
+    expect(selective.output.dependencyDiagnostics).toEqual([]);
+    expect(selective.output.importMap).toEqual({'app/models/team.rb':['app/models/person.rb'],'README.md':[]});
+  });
+
+  it('reports unsupported Ruby semantics separately from extractor infrastructure failures', () => {
+    const source = {
+      'config/application.rb': 'module Demo; class Application < Rails::Application; config.autoload_paths += dynamic_roots; end; end',
+      'app/models/person.rb': 'class Person; end',
+      'probe.rb': "require_relative 'app/models/person'\nPerson.find",
+    };
+    projectRoot = setupTree(source);
+    const result = runScript(projectRoot,{projectRoot,files:Object.keys(source).map(path=>({path,language:'ruby',fileCategory:'code'}))});
+    expect(result.status,result.stderr).toBe(0);
+    expect(result.output.failures).toEqual([]);
+    expect(result.output.dependencyDiagnostics).toEqual([expect.objectContaining({code:'unsupported_autoload_config',path:'config/application.rb'})]);
+    expect(result.output.dependencyMap['probe.rb']).toEqual([]);
+    expect(result.output.importMap['probe.rb']).toEqual(['app/models/person.rb']);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not re-read rejected Ruby symlinks through explicit import extraction', () => {
+    projectRoot = setupTree({'config/application.rb':'module Demo; class Application < Rails::Application; end; end','app/models/user.rb':'class User; end','consumer.rb':"require_relative 'unsafe'"});
+    const outside = mkdtempSync(join(tmpdir(),'ua-ruby-unsafe-'));
+    try {
+      writeFileSync(join(outside,'unsafe.rb'),"require_relative './app/models/user'\nUser.find");
+      symlinkSync(join(outside,'unsafe.rb'),join(projectRoot,'unsafe.rb'));
+      const result = runScript(projectRoot,{projectRoot,files:['config/application.rb','app/models/user.rb','consumer.rb','unsafe.rb'].map(path=>({path,language:'ruby',fileCategory:'code'}))});
+      expect(result.status,result.stderr).toBe(0);
+      expect(result.output.importMap['unsafe.rb']).toEqual([]);
+      expect(result.output.importMap['consumer.rb']).toEqual([]);
+      expect(result.output.dependencyMap['unsafe.rb']).toEqual([]);
+      expect(result.output.failures).toEqual([expect.objectContaining({path:'unsafe.rb',stage:'ruby-file-read'})]);
+      expect(result.output.dependencyDiagnostics).toEqual([]);
+    } finally { rmSync(outside,{recursive:true,force:true}); }
   });
 });
 

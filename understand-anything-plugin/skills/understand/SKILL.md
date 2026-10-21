@@ -191,6 +191,7 @@ Determine whether to run a full analysis or incremental update.
    | `--full` flag in `$ARGUMENTS` | Full analysis (all phases) |
    | No existing graph or meta | Full analysis (all phases) |
    | Existing graph + explicit `--exclude` | Run deterministic incremental preparation even when the commit hash is unchanged, so the new inventory rules take effect immediately |
+   | Existing graph or saved scan contains Ruby files | Run deterministic incremental preparation even when the commit hash is unchanged, so resolver-version changes and missing dependency baselines are checked before any current-graph shortcut |
    | `--review` flag + existing graph + unchanged commit hash | Skip to Phase 6 (review-only — reuse existing assembled graph) |
    | Existing graph + unchanged commit hash | Ask the user: "The graph is up to date at this commit. Would you like to: **(a)** run a full rebuild (`--full`), **(b)** run the LLM graph reviewer (`--review`), or **(c)** do nothing?" Then follow their choice. If they pick (c), STOP. |
    | Existing graph + changed files | Run deterministic incremental preparation below |
@@ -212,7 +213,7 @@ Determine whether to run a full analysis or incremental update.
      --exclude "$EXCLUDE_PATTERNS"
    ```
 
-   The helper uses parameterized `git diff --name-status -z`, performs a fresh deterministic scan with the current `.understandignore` / `--exclude` rules, compares structural fingerprints, selectively refreshes imports, and atomically writes:
+   The helper uses parameterized `git diff --name-status -z`, performs a fresh deterministic scan with the current `.understandignore` / `--exclude` rules, compares structural fingerprints, refreshes explicit imports and typed dependencies, and atomically writes:
    - `$UA_DIR/intermediate/incremental-plan.json`
    - `$UA_DIR/intermediate/scan-result.json`
    - `$UA_DIR/intermediate/changed-files.json`
@@ -297,8 +298,11 @@ After the subagent completes, read `$UA_DIR/intermediate/scan-result.json` to ge
 - File list with line counts and `fileCategory` per file (`code`, `config`, `docs`, `infra`, `data`, `script`, `markup`)
 - Complexity estimate
 - Import map (`importMap`): pre-resolved project-internal imports per file (non-code files have empty arrays)
+- Typed dependencies (`dependencyMap`): resolved file facts with `target`, `type`, `kind`, and optional `reference`/`line`; kept separate from explicit imports
+- `dependencyDiagnostics`: unsupported and ambiguous static-resolution cases, separate from extraction infrastructure failures
+- `dependencyResolverVersion`: copied from the extractor (`1` for the initial Ruby resolver)
 
-Store `importMap` in memory as `$IMPORT_MAP` for use in Phase 2 batch construction.
+Preserve both maps, diagnostics, and resolver version in `scan-result.json`; the batching helper reads this contract directly. Surface dependency diagnostic counts and limitations in the final report without converting them into guessed edges.
 Store the file list as `$FILE_LIST` with `fileCategory` metadata for use in Phase 2 batch construction.
 
 **Gate check:** If >100 files, inform the user and suggest scoping with a subdirectory argument. Proceed only if user confirms or add guidance that this may take a while.
@@ -328,6 +332,8 @@ For `PARTIAL_UPDATE` or `ARCHITECTURE_UPDATE`, inspect `filesToReanalyze` from t
   ```
 
 Both forms read the freshly reconciled `$UA_DIR/intermediate/scan-result.json` and write `$UA_DIR/intermediate/batches.json`.
+
+Community detection, neighbor context, and hub ranking use the union of explicit imports and typed dependencies. Each batch retains explicit imports in `batchImportData` and typed facts in `batchDependencyData`, including empty arrays. Pass both payloads through unchanged.
 
 Capture stderr. Append any line starting with `Warning:` to `$PHASE_WARNINGS` for the final report.
 
@@ -367,6 +373,11 @@ Dispatch prompt template (fill in batch-specific values from `batches.json[i]`):
 > <batchImportData JSON from batches.json[i].batchImportData>
 > ```
 >
+> Pre-resolved typed dependencies (preserve each supplied type, file endpoints, and evidence in description):
+> ```json
+> <batchDependencyData JSON from batches.json[i].batchDependencyData>
+> ```
+>
 > Cross-batch neighbors with their exported symbols (confidence boost for cross-batch edges):
 > ```json
 > <neighborMap JSON from batches.json[i].neighborMap>
@@ -393,6 +404,7 @@ This script reads all `batch-*.json` files (including `batch-<i>-part-<k>.json` 
 - Rewrites edge references to match corrected node IDs
 - Deduplicates nodes by ID (keeps last occurrence) and edges by `(source, target, type)`
 - Drops dangling edges referencing missing nodes
+- Recovers missing explicit imports and typed file dependencies from the scan maps, using existing whole-file endpoints; stamps matching typed edges with `recoveredFromDependencyMap: true` and preserves fact evidence in `description`
 - Logs all corrections and dropped items to stderr
 
 The merge script also runs a `tested_by` linker that canonicalizes test-coverage edges in two passes. **Pass 1** walks LLM-emitted `tested_by` edges and flips inverted ones in place; semantically broken edges (test↔test, prod↔prod, orphan endpoints) are dropped. **Pass 2** supplements with path-convention pairings. Production nodes that end up sourcing any `tested_by` edge get a `"tested"` tag. All resulting edges run `production → test`.
@@ -403,7 +415,7 @@ Include the script's warnings in `$PHASE_WARNINGS` for the reviewer.
 
 ### Incremental update path
 
-`prepare-incremental.mjs` has already refreshed the complete file inventory and `importMap`, written the exact analyzer list, and pruned changed/deleted paths from the old graph into `batch-existing.json`.
+`prepare-incremental.mjs` has already refreshed the complete file inventory, `importMap`, `dependencyMap`, dependency diagnostics, and resolver version, written the exact analyzer list, and pruned changed/deleted paths and refreshed deterministic relationships from the old graph into `batch-existing.json`. Use the helper's action: a resolver-version upgrade or Ruby context change can require a `PARTIAL_UPDATE` with no analyzer files, so its refreshed facts still pass through deterministic merge.
 
 1. If `filesToReanalyze` is non-empty, dispatch file-analyzer only for the batches from the incremental `batches.json`, using the same prompt template as the full path. Include `previousSymbols`: the function/class/method node checklist for those files from `incremental-symbol-baseline.json` (IDs, names, types, paths, line ranges, and class containment). Existing symbols that still exist must survive significance filtering; regenerate their semantics from current source. Never add `deletedFiles`, `cosmeticFiles`, `ignoredFiles`, or `generatedArtifactFiles` to a prompt.
 2. If `filesToReanalyze` is empty, dispatch no agent and create no new batch file.
@@ -435,7 +447,7 @@ When the report has `unresolvedFiles`, prepare exactly one repair:
 node "<SKILL_DIR>/prepare-symbol-retry.mjs" "$PROJECT_ROOT"
 ```
 
-This helper revalidates the candidate, records attempt 1/1 for the base/head commits, removes the affected files' new nodes and outgoing edges, clears old numeric batch shards, and preserves other merged results in `batch-0.json`. Current inbound edges from other files remain candidates until merge reconciles their targets against the replacement nodes; candidates with missing targets are dropped. Dispatch only `batches[]` from `incremental-symbol-retry.json`, using each batch's `files`, `batchIndex`, `batchImportData`, `neighborMap`, `previousSymbols`, and `missingSymbols`. Use the normal file-analyzer prompt and output names. The repair must reanalyze each affected file completely, not just append missing nodes. Then rerun merge. Do not rerun prepare to obtain another retry; the attempt remains used for those commits.
+This helper revalidates the candidate, records attempt 1/1 for the base/head commits, removes the affected files' new nodes and outgoing edges, clears old numeric batch shards, and preserves other merged results in `batch-0.json`. Current inbound edges from other files remain candidates until merge reconciles their targets against the replacement nodes; candidates with missing targets are dropped. Dispatch only `batches[]` from `incremental-symbol-retry.json`, using each batch's `files`, `batchIndex`, `batchImportData`, `batchDependencyData`, `neighborMap`, `previousSymbols`, and `missingSymbols`. Use the normal file-analyzer prompt and output names. The repair must reanalyze each affected file completely, not just append missing nodes. Then rerun merge. Do not rerun prepare to obtain another retry; the attempt remains used for those commits.
 
 If repair preparation, the repair dispatch, or the second merge fails, **STOP** and retain diagnostics. Do not publish or advance `knowledge-graph.json`, `fingerprints.json`, or `meta.json`. Never concatenate old nodes or old semantic edges into the candidate to satisfy the gate. Other merge failures without eligible unresolved files stop immediately. On success, continue to the applicable architecture/tour phases.
 

@@ -622,6 +622,101 @@ describe('compute-batches.mjs — neighborMap truncation', () => {
   });
 });
 
+describe('compute-batches.mjs — typed dependency union', () => {
+  let root;
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeScan(scan) {
+    writeFileSync(join(root, '.understand-anything/intermediate/scan-result.json'), JSON.stringify(scan));
+  }
+
+  it('groups typed-only and mixed cliques without changing explicit import payloads', () => {
+    root = setupProject('scan-result-3-cliques.json');
+    const original = JSON.parse(readFileSync(join(root, '.understand-anything/intermediate/scan-result.json'), 'utf-8'));
+    expect(runScript(root).status).toBe(0);
+    const expectedFiles = readBatches(root).batches.map(batch => batch.files);
+    for (const mixed of [false, true]) {
+      const scan = { ...original, importMap: {}, dependencyMap: {} };
+      for (const [path, targets] of Object.entries(original.importMap)) {
+        scan.importMap[path] = mixed ? targets.slice(0, 1) : [];
+        scan.dependencyMap[path] = targets.map(target => ({ target, type: 'depends_on', kind: 'constant' }));
+      }
+      writeScan(scan);
+      expect(runScript(root).status).toBe(0);
+      const output = readBatches(root);
+      expect(output.batches.map(batch => batch.files)).toEqual(expectedFiles);
+      for (const batch of output.batches) {
+        for (const file of batch.files) {
+          expect(batch.batchImportData[file.path]).toEqual(scan.importMap[file.path]);
+          expect(batch.batchDependencyData[file.path]).toEqual(
+            [...scan.dependencyMap[file.path]].sort((a, b) => a.target < b.target ? -1 : 1),
+          );
+        }
+      }
+      // Input ordering of typed facts does not affect batching or neighbor order.
+      Object.values(scan.dependencyMap).forEach(facts => facts.reverse());
+      writeScan(scan);
+      expect(runScript(root).status).toBe(0);
+      expect(readBatches(root)).toEqual(output);
+    }
+  });
+
+  it('keeps inbound and outbound typed neighbors when analyzing only a changed file', () => {
+    root = setupProject('scan-result-3-cliques.json');
+    const paths = ['app/models/user.rb', 'app/models/account.rb', 'app/models/base.rb', 'config/routes.rb'];
+    const scan = {
+      files: paths.map(path => ({ path, language: 'ruby', sizeLines: 1, fileCategory: 'code' })),
+      importMap: { [paths[0]]: [paths[1]] },
+      dependencyMap: {
+        [paths[0]]: [
+          { target: paths[1], type: 'depends_on', kind: 'association', reference: 'Account', line: 3 },
+          { target: paths[2], type: 'inherits', kind: 'superclass', reference: 'Base', line: 1 },
+        ],
+        [paths[3]]: [{ target: paths[0], type: 'routes', kind: 'route' }],
+      },
+    };
+    writeScan(scan);
+    const changed = join(root, 'changed.json');
+    writeFileSync(changed, JSON.stringify([paths[0]]));
+    expect(runScript(root, [`--changed-files=${changed}`]).status).toBe(0);
+    const [batch] = readBatches(root).batches;
+    expect(batch.files.map(file => file.path)).toEqual([paths[0]]);
+    expect(batch.batchImportData).toEqual({ [paths[0]]: [paths[1]] });
+    expect(batch.batchDependencyData).toEqual({ [paths[0]]: scan.dependencyMap[paths[0]] });
+    expect(batch.neighborMap[paths[0]].map(neighbor => neighbor.path)).toEqual(paths.slice(1).sort());
+  });
+
+  it('uses deduplicated typed connections for hub ranking and emits empty arrays', () => {
+    root = setupProject('scan-result-3-cliques.json');
+    const hub = 'app/services/hub.rb';
+    const leaves = Array.from({ length: 51 }, (_, i) => `app/services/leaf${String(i).padStart(2, '0')}.rb`);
+    const extra = ['lib/a.rb', 'lib/b.rb', 'lib/c.rb'];
+    const scan = {
+      files: [hub, ...leaves, ...extra].map(path => ({ path, language: 'ruby', sizeLines: 1, fileCategory: 'code' })),
+      importMap: { [hub]: leaves },
+      dependencyMap: {
+        [hub]: leaves.map(target => ({ target, type: 'depends_on', kind: 'constant' })),
+        [leaves.at(-1)]: extra.map(target => ({ target, type: 'depends_on', kind: 'include' })),
+      },
+    };
+    writeScan(scan);
+    const changed = join(root, 'changed.json');
+    writeFileSync(changed, JSON.stringify([hub, extra[0]]));
+    const result = runScript(root, [`--changed-files=${changed}`]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain(`neighborMap for ${hub} has high 1-hop degree 51`);
+    const batches = readBatches(root).batches;
+    const hubBatch = batches.find(batch => batch.neighborMap[hub]);
+    expect(hubBatch.neighborMap[hub]).toHaveLength(50);
+    expect(hubBatch.neighborMap[hub][0].path).toBe(leaves.at(-1));
+    const extraBatch = batches.find(batch => batch.files.some(file => file.path === extra[0]));
+    expect(extraBatch.batchImportData[extra[0]]).toEqual([]);
+    expect(extraBatch.batchDependencyData[extra[0]]).toEqual([]);
+  });
+});
+
 describe('compute-batches.mjs — fallback', () => {
   let root;
 

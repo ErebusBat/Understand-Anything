@@ -14,6 +14,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  dependencyRefreshPaths,
+  pruneExistingGraph,
+  refreshDependencyData,
+} from '../../../understand-anything-plugin/skills/understand/prepare-incremental.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '../../..');
@@ -94,7 +99,8 @@ function buildBaseline(root, baseCommit) {
     'utf-8',
   );
   run(process.execPath, [importScript, importInput, importOutput], root);
-  const importMap = JSON.parse(readFileSync(importOutput, 'utf-8')).importMap;
+  const { importMap, dependencyMap, dependencyDiagnostics, dependencyResolverVersion }
+    = JSON.parse(readFileSync(importOutput, 'utf-8'));
   const scan = {
     name: 'fixture',
     description: 'fixture project',
@@ -106,6 +112,9 @@ function buildBaseline(root, baseCommit) {
     filteredByIgnore: rawScan.filteredByIgnore,
     estimatedComplexity: rawScan.estimatedComplexity,
     importMap,
+    dependencyMap,
+    dependencyDiagnostics,
+    dependencyResolverVersion,
   };
   writeFileSync(join(intermediate, 'scan-result.json'), JSON.stringify(scan), 'utf-8');
 
@@ -142,6 +151,15 @@ function buildBaseline(root, baseCommit) {
         weight: 0.7,
       })),
   );
+  for (const [sourcePath, facts] of Object.entries(dependencyMap ?? {})) {
+    for (const fact of facts) {
+      if (!nodeIdByPath.has(sourcePath) || !nodeIdByPath.has(fact.target)) continue;
+      edges.push({
+        source: nodeIdByPath.get(sourcePath), target: nodeIdByPath.get(fact.target),
+        type: fact.type, direction: 'forward', weight: 0.7, recoveredFromDependencyMap: true,
+      });
+    }
+  }
   writeFileSync(
     join(root, '.ua', 'knowledge-graph.json'),
     JSON.stringify({
@@ -230,6 +248,340 @@ afterEach(async () => {
   // Yield between cases so Vitest workers can service task-update RPC replies,
   // especially on slower Windows runners where the full file exceeds 60s.
   await new Promise(resolve => setImmediate(resolve));
+});
+
+describe('typed dependency incremental contracts', () => {
+  const files = ['app/models/person.rb', 'app/services/report.rb', 'src/extra.js']
+    .map(path => ({ path, language: path.endsWith('.rb') ? 'ruby' : 'javascript' }));
+  const fact = { target: 'app/models/person.rb', type: 'depends_on', kind: 'constant', reference: 'Person', line: 3 };
+  const baseline = () => ({
+    files,
+    dependencyResolverVersion: 1,
+    dependencyMap: { 'app/models/person.rb': [], 'app/services/report.rb': [fact], 'src/extra.js': [] },
+  });
+
+  it.each(['config/application.rb', 'config/initializers/inflections.rb', 'app/models/person.rb', 'engines/shop/lib/shop/engine.rb', 'tasks/update.rake'])(
+    'refreshes every Ruby consumer when %s changes, even outside the current inventory', path => {
+      const refresh = dependencyRefreshPaths({ previousScan: baseline(), currentScan: { files },
+        graph: {}, changedPaths: [path], inventoryChanged: false });
+      expect(refresh.paths).toEqual(['app/models/person.rb', 'app/services/report.rb']);
+    },
+  );
+
+  it('does not refresh Ruby facts for an ordinary non-Ruby edit', () => {
+    expect(dependencyRefreshPaths({ previousScan: baseline(), currentScan: { files }, graph: {},
+      changedPaths: ['src/extra.js'], inventoryChanged: false }).paths).toEqual([]);
+  });
+
+  it.each(['inventoryChanged', 'forceRefresh'])('refreshes all Ruby consumers for %s', flag => {
+    expect(dependencyRefreshPaths({ previousScan: baseline(), currentScan: { files }, graph: {},
+      changedPaths: [], inventoryChanged: false, [flag]: true }).paths)
+      .toEqual(['app/models/person.rb', 'app/services/report.rb']);
+  });
+
+  it('clears removed facts, prunes inventory endpoints, and replaces only refreshed diagnostics', () => {
+    const previousScan = baseline();
+    previousScan.dependencyMap['src/extra.js'] = [fact, { ...fact, target: 'deleted.rb' }];
+    previousScan.dependencyDiagnostics = [
+      { path: 'app/services/report.rb', code: 'ambiguous_constant', message: 'Old ambiguity' },
+      { path: 'app/models/person.rb', code: 'unsupported_association', message: 'Still unsupported' },
+      { path: 'deleted.rb', code: 'unsupported', message: 'Deleted diagnostic' },
+      { path: null, code: 'old_context', message: 'Old context' },
+    ];
+    const diagnostic = { path: 'app/services/report.rb', code: 'unsupported_dynamic', message: 'Unsupported reference', line: 4 };
+    const extraction = { dependencyMap: { 'app/services/report.rb': [] }, dependencyResolverVersion: 1,
+      dependencyDiagnostics: [diagnostic, diagnostic, { path: null, code: 'context', message: 'Current context' }] };
+    const input = { previousScan, currentScan: { files }, extraction, refreshPaths: ['app/services/report.rb'] };
+    const result = refreshDependencyData(input);
+    expect(result.dependencyMap['app/services/report.rb']).toEqual([]);
+    expect(result.dependencyMap['src/extra.js']).toEqual([fact]);
+    expect(result.dependencyDiagnostics).toEqual(expect.arrayContaining([
+      diagnostic, previousScan.dependencyDiagnostics[1], extraction.dependencyDiagnostics[2],
+    ]));
+    expect(result.dependencyDiagnostics).toHaveLength(3);
+    expect(result.dependencyResolverVersion).toBe(1);
+    expect(refreshDependencyData(input)).toEqual(result);
+    expect(previousScan.dependencyMap['app/services/report.rb']).toEqual([fact]);
+  });
+
+  it('normalizes fact order, deduplicates evidence, and rejects invalid or outside-inventory endpoints', () => {
+    const extraction = { dependencyResolverVersion: 1, dependencyDiagnostics: [], dependencyMap: {
+      'app/services/report.rb': [fact, { ...fact, kind: 'association', line: 2 }, fact,
+        { ...fact, target: '../escape.rb' }, { ...fact, target: 'missing.rb' },
+        { ...fact, target: 'app/services/report.rb' }, { ...fact, type: 'imports' }],
+    } };
+    const input = { previousScan: baseline(), currentScan: { files }, extraction, refreshPaths: ['app/services/report.rb'] };
+    const result = refreshDependencyData(input);
+    expect(result.dependencyMap['app/services/report.rb']).toEqual([{ ...fact, kind: 'association', line: 2 }, fact]);
+    extraction.dependencyMap['app/services/report.rb'].reverse();
+    expect(refreshDependencyData(input)).toEqual(result);
+  });
+
+  it('keeps global diagnostics when empty analysisPaths skips extraction context', () => {
+    const previousScan = { ...baseline(), dependencyDiagnostics: [{ path: null, code: 'unsupported_context', message: 'Unchanged context' }] };
+    const extraction = { dependencyMap: {}, dependencyDiagnostics: [], dependencyResolverVersion: 1 };
+    expect(refreshDependencyData({ previousScan, currentScan: { files }, extraction, refreshPaths: [] })
+      .dependencyDiagnostics).toEqual(previousScan.dependencyDiagnostics);
+    expect(refreshDependencyData({ previousScan, currentScan: { files: [] }, extraction, refreshPaths: [] })
+      .dependencyDiagnostics).toEqual([]);
+  });
+
+  it.each([
+    [{ dependencyResolverVersion: 0, dependencyMap: {} }, /resolver version/],
+    [{ dependencyResolverVersion: 1, dependencyMap: {} }, /omitted refreshed source/],
+  ])('fails closed on an incompatible or incomplete extractor contract', (extraction, message) => {
+    expect(() => refreshDependencyData({ previousScan: baseline(), currentScan: { files }, extraction,
+      refreshPaths: ['app/services/report.rb'] })).toThrow(message);
+  });
+
+  it('prunes typed file facts by provenance or prior endpoint/type without dropping unrelated LLM edges', () => {
+    const nodes = [
+      ...files.map(file => ({ id: `file:${file.path}`, type: 'file', filePath: file.path })),
+      { id: 'class:app/services/report.rb:Report', type: 'class', filePath: 'app/services/report.rb' },
+    ];
+    const source = 'file:app/services/report.rb';
+    const target = 'file:app/models/person.rb';
+    const priorFacts = ['depends_on', 'inherits', 'routes'].map(type => ({ ...fact, type }));
+    const stale = priorFacts.map(({ type }) => ({ source, target, type }));
+    const unrelated = [
+      { source, target: 'file:src/extra.js', type: 'depends_on' },
+      { source, target, type: 'calls' },
+      { source: nodes[3].id, target, type: 'inherits', recoveredFromDependencyMap: true },
+      { source: target, target: source, type: 'depends_on', recoveredFromDependencyMap: true },
+    ];
+    const marked = { source, target: 'file:src/extra.js', type: 'routes', recoveredFromDependencyMap: true };
+    const graph = { nodes, edges: [...stale, ...unrelated, marked] };
+    expect(pruneExistingGraph(graph, new Set(), new Set(), new Set(['app/services/report.rb']),
+      { 'app/services/report.rb': priorFacts }).edges).toEqual(unrelated);
+    expect(graph.edges).toHaveLength(8);
+  });
+});
+
+describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
+  const consumer = 'app/services/report.rb';
+  const target = 'app/models/person.rb';
+  function railsFixture(extra = {}) {
+    const fixture = setupRepository({
+      'config/application.rb': 'module Fixture\n  class Application < Rails::Application\n  end\nend\n',
+      [target]: 'class Person\nend\n',
+      'app/models/group.rb': 'class Group\nend\n',
+      [consumer]: 'class Report\n  def call\n    Person.find(1)\n  end\nend\n',
+      'src/one.js': 'module.exports = 1;\n',
+      'src/two.js': 'module.exports = 2;\n',
+      'src/three.js': 'module.exports = 3;\n',
+      ...extra,
+    });
+    const intermediate = join(fixture.root, '.ua', 'intermediate');
+    const read = name => JSON.parse(readFileSync(join(intermediate, name), 'utf8'));
+    const write = (name, value) => writeFileSync(join(intermediate, name), JSON.stringify(value));
+    return { ...fixture, intermediate, read, write };
+  }
+  const targets = (scan, source = consumer) => [...new Set(scan.dependencyMap[source].map(fact => fact.target))].sort();
+
+  it('invalidates an unchanged consumer when the target declaration changes', () => {
+    const f = railsFixture();
+    expect(targets(f.read('scan-result.json'))).toContain(target);
+    const graphPath = join(f.root, '.ua', 'knowledge-graph.json');
+    const graph = JSON.parse(readFileSync(graphPath, 'utf8'));
+    // Legacy typed facts can lack a marker, but matching the prior map is enough.
+    for (const edge of graph.edges) delete edge.recoveredFromDependencyMap;
+    const llmEdge = { source: `file:${consumer}`, target: 'file:src/one.js', type: 'depends_on', direction: 'forward', weight: 0.5 };
+    graph.edges.push(llmEdge);
+    writeFileSync(graphPath, JSON.stringify(graph));
+    writeProjectFile(f.root, target, 'class RetiredPerson\nend\n');
+    commit(f.root, 'change declaration');
+    const result = prepare(f.root, f.baseCommit);
+    expect(result.plan.dependencyMapRefreshPaths).toContain(consumer);
+    expect(result.plan.filesToReanalyze).not.toContain(consumer);
+    expect(targets(result.scan)).not.toContain(target);
+    expect(result.scan.importMap[consumer]).toEqual([]);
+    const retained = f.read('batch-existing.json');
+    expect(retained.edges).toContainEqual(llmEdge);
+    expect(retained.edges).not.toContainEqual(expect.objectContaining({ source: `file:${consumer}`, target: `file:${target}`, type: 'depends_on' }));
+  });
+
+  it('uses the merge path for a changed Ruby method-body reference classified as cosmetic', () => {
+    const f = railsFixture();
+    writeProjectFile(f.root, consumer, 'class Report\n  def call\n    Group.find(1)\n  end\nend\n');
+    const head = commit(f.root, 'change reference');
+    const { plan, scan } = prepare(f.root, f.baseCommit);
+    expect(plan.action).toBe('PARTIAL_UPDATE');
+    expect(plan.filesToReanalyze).toEqual([]);
+    expect(targets(scan)).toEqual(['app/models/group.rb']);
+    run(python, [mergeScript, f.root], f.root);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    const graph = JSON.parse(readFileSync(join(f.root, '.ua', 'knowledge-graph.json'), 'utf8'));
+    expect(graph.project.gitCommitHash).toBe(head);
+    expect(graph.edges.filter(edge => edge.source === `file:${consumer}` && edge.type === 'depends_on'))
+      .toEqual([expect.objectContaining({ target: 'file:app/models/group.rb', recoveredFromDependencyMap: true })]);
+  });
+
+  it('invalidates an unchanged consumer when a declaration changes without changing inventory', () => {
+    const f = railsFixture();
+    expect(targets(f.read('scan-result.json'))).toEqual([target]);
+    writeProjectFile(f.root, target, 'class RetiredPerson\nend\n');
+    commit(f.root, 'change declaration without changing inventory');
+    const { plan, scan } = prepare(f.root, f.baseCommit);
+    expect(plan.filesToReanalyze).not.toContain(consumer);
+    expect(plan.dependencyMapRefreshPaths).toContain(consumer);
+    expect(targets(scan)).toEqual([]);
+    expect(scan.dependencyDiagnostics).toContainEqual(expect.objectContaining({ path: target, code: 'unsupported_constant_mapping' }));
+  });
+
+  it.each(['rename', 'delete', 'ignore', 'exclude'])('refreshes unchanged consumers for a target %s', operation => {
+    const f = railsFixture();
+    expect(targets(f.read('scan-result.json'))).toContain(target);
+    let extraArgs = [];
+    if (operation === 'rename') renameSync(join(f.root, target), join(f.root, 'app/services/person.rb'));
+    if (operation === 'delete') unlinkSync(join(f.root, target));
+    if (operation === 'ignore') writeProjectFile(f.root, '.understandignore', `${target}\n`);
+    if (operation === 'exclude') extraArgs = ['--exclude', target];
+    else commit(f.root, `${operation} target`);
+    const { plan, scan } = prepare(f.root, f.baseCommit, extraArgs);
+    expect(plan.dependencyMapRefreshPaths).toContain(consumer);
+    expect(plan.filesToReanalyze).not.toContain(consumer);
+    expect(scan.dependencyMap).not.toHaveProperty(target);
+    expect(targets(scan)).toEqual(operation === 'rename' ? ['app/services/person.rb'] : []);
+    const inventory = new Set(scan.files.map(file => file.path));
+    for (const facts of Object.values(scan.dependencyMap)) for (const fact of facts) expect(inventory.has(fact.target)).toBe(true);
+  });
+
+  it('refreshes unchanged consumers after literal autoload configuration changes', () => {
+    const f = railsFixture({
+      'lib/tool.rb': 'class Tool\nend\n',
+      [consumer]: 'class Report\n  def call\n    Tool.run\n  end\nend\n',
+    });
+    expect(targets(f.read('scan-result.json'))).toEqual([]);
+    writeProjectFile(f.root, 'config/application.rb', 'module Fixture\n  class Application < Rails::Application\n    config.autoload_lib(ignore: [])\n  end\nend\n');
+    commit(f.root, 'enable lib autoload');
+    const { plan, scan } = prepare(f.root, f.baseCommit);
+    expect(plan.action).not.toBe('SKIP');
+    expect(plan.dependencyMapRefreshPaths).toContain(consumer);
+    expect(plan.filesToReanalyze).not.toContain(consumer);
+    expect(targets(scan)).toEqual(['lib/tool.rb']);
+  });
+
+  it('refreshes association facts when literal inflections change', () => {
+    const f = railsFixture({
+      'config/initializers/inflections.rb': 'ActiveSupport::Inflector.inflections(:en) do |inflect|\nend\n',
+      'app/models/application_record.rb': 'class ApplicationRecord < ActiveRecord::Base\nend\n',
+      'app/models/cactus.rb': 'class Cactus < ApplicationRecord\nend\n',
+      'app/models/garden.rb': 'class Garden < ApplicationRecord\n  has_many :cacti\nend\n',
+    });
+    writeProjectFile(f.root, 'config/initializers/inflections.rb', 'ActiveSupport::Inflector.inflections(:en) do |inflect|\n  inflect.irregular "cactus", "cacti"\nend\n');
+    commit(f.root, 'configure association inflection');
+    const { plan, scan } = prepare(f.root, f.baseCommit);
+    expect(plan.dependencyMapRefreshPaths).toContain('app/models/garden.rb');
+    expect(plan.filesToReanalyze).not.toContain('app/models/garden.rb');
+    expect(scan.dependencyMap['app/models/garden.rb']).toContainEqual(expect.objectContaining({
+      target: 'app/models/cactus.rb', kind: 'association', type: 'depends_on',
+    }));
+  });
+
+  it.each([undefined, 0, 2])('migrates resolver version %s on an unchanged baseline, repeatably', version => {
+    const f = railsFixture();
+    const baseline = f.read('scan-result.json');
+    baseline.dependencyResolverVersion = version;
+    baseline.dependencyMap[consumer] = [];
+    baseline.dependencyDiagnostics = [{ path: consumer, code: 'old', message: 'Stale diagnostic' }];
+    f.write('scan-result.json', baseline);
+    const first = prepare(f.root, f.baseCommit);
+    const retained = f.read('batch-existing.json');
+    const second = prepare(f.root, f.baseCommit);
+    expect(first.plan.action).toBe('PARTIAL_UPDATE');
+    expect(first.plan.filesToReanalyze).toEqual([]);
+    expect(first.plan.dependencyResolverVersionChanged).toBe(true);
+    expect(first.scan.dependencyResolverVersion).toBe(1);
+    expect(targets(first.scan)).toContain(target);
+    expect(first.scan.dependencyDiagnostics).not.toContainEqual(baseline.dependencyDiagnostics[0]);
+    expect(second.plan).toEqual(first.plan);
+    expect(second.scan).toEqual(first.scan);
+    expect(f.read('batch-existing.json')).toEqual(retained);
+    expect(f.read('incremental-baseline.json').scan).toEqual(JSON.parse(JSON.stringify(baseline)));
+  });
+
+  it('migrates a legacy resolver even when the commit changes generated artifacts only', () => {
+    const f = railsFixture();
+    const scan = f.read('scan-result.json');
+    delete scan.dependencyResolverVersion;
+    f.write('scan-result.json', scan);
+    writeProjectFile(f.root, '.ua/generated.json', '{}\n');
+    commit(f.root, 'generated output', { forcePaths: ['.ua/generated.json'] });
+    const result = prepare(f.root, f.baseCommit);
+    expect(result.plan.action).toBe('PARTIAL_UPDATE');
+    expect(result.scan.dependencyResolverVersion).toBe(1);
+    expect(f.read('batch-existing.json').nodes).not.toHaveLength(0);
+  });
+
+  it('preserves current Ruby facts and diagnostics on an unrelated non-Ruby retry at a different HEAD', () => {
+    const f = railsFixture();
+    const baseline = f.read('scan-result.json');
+    const untouchedDiagnostic = { path: consumer, code: 'unsupported_example', message: 'Retained source diagnostic' };
+    baseline.dependencyDiagnostics.push(untouchedDiagnostic);
+    f.write('scan-result.json', baseline);
+    writeProjectFile(f.root, consumer, 'class Report\n  def call\n    Group.find(1)\n  end\nend\n');
+    commit(f.root, 'abandoned Ruby edit');
+    expect(targets(prepare(f.root, f.baseCommit).scan)).toEqual(['app/models/group.rb']);
+    git(f.root, ['reset', '--hard', f.baseCommit]);
+    writeProjectFile(f.root, 'src/one.js', 'module.exports = 100;\n');
+    commit(f.root, 'replacement non-Ruby edit');
+    const { plan, scan } = prepare(f.root, f.baseCommit);
+    expect(plan.action).toBe('SKIP');
+    expect(plan.dependencyMapRefreshPaths).toEqual([]);
+    expect(targets(scan)).toEqual([target]);
+    expect(scan.dependencyDiagnostics).toContainEqual(untouchedDiagnostic);
+    expect(f.read('incremental-baseline.json').scan).toEqual(baseline);
+  });
+
+  it('keeps unsupported association diagnostics separate from infrastructure failures', () => {
+    const f = railsFixture({
+      'app/models/application_record.rb': 'class ApplicationRecord < ActiveRecord::Base\nend\n',
+      'app/models/picture.rb': 'class Picture < ApplicationRecord\nend\n',
+    });
+    writeProjectFile(f.root, 'app/models/picture.rb', 'class Picture < ApplicationRecord\n  belongs_to :attachable, polymorphic: true\nend\n');
+    commit(f.root, 'add unsupported association');
+    const { scan } = prepare(f.root, f.baseCommit);
+    expect(scan.dependencyDiagnostics).toContainEqual(expect.objectContaining({ path: 'app/models/picture.rb' }));
+    expect(scan.dependencyMap['app/models/picture.rb'].filter(fact => fact.kind === 'association')).toEqual([]);
+    expect(f.read('incremental-import-output.json').failures).toEqual([]);
+  });
+
+  it('repairs typed edges from an abandoned published graph using the immutable baseline', () => {
+    const f = railsFixture();
+    writeProjectFile(f.root, consumer, 'class Report\n  def call\n    Group.find(1)\n  end\nend\n');
+    const abandonedHead = commit(f.root, 'abandoned Ruby edit');
+    prepare(f.root, f.baseCommit);
+    run(python, [mergeScript, f.root], f.root);
+    const graphPath = join(f.root, '.ua', 'knowledge-graph.json');
+    const published = JSON.parse(readFileSync(graphPath, 'utf8'));
+    const assembled = f.read('assembled-graph.json');
+    // Simulate graph publication followed by failure before fingerprints/meta.
+    writeFileSync(graphPath, JSON.stringify({ ...published, ...assembled,
+      project: { ...published.project, gitCommitHash: abandonedHead } }));
+    git(f.root, ['reset', '--hard', f.baseCommit]);
+    writeProjectFile(f.root, 'src/one.js', 'module.exports = 100;\n');
+    commit(f.root, 'replacement non-Ruby edit');
+    const { plan, scan } = prepare(f.root, f.baseCommit);
+    expect(plan.action).toBe('PARTIAL_UPDATE');
+    expect(plan.filesToReanalyze).toEqual([]);
+    expect(targets(scan)).toEqual([target]);
+    run(python, [mergeScript, f.root], f.root);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    const restored = JSON.parse(readFileSync(graphPath, 'utf8'));
+    expect(restored.edges.filter(edge => edge.source === `file:${consumer}` && edge.type === 'depends_on'))
+      .toEqual([expect.objectContaining({ target: `file:${target}` })]);
+  });
+
+  it('refreshes typed facts before dispatching a full update', () => {
+    const f = railsFixture();
+    for (const path of [target, 'app/models/group.rb', consumer]) writeProjectFile(f.root, path, 'class Replacement\nend\n');
+    writeProjectFile(f.root, 'src/one.js', 'function changed() {}\nmodule.exports = changed;\n');
+    commit(f.root, 'change most files');
+    const { plan, scan } = prepare(f.root, f.baseCommit);
+    expect(plan.action).toBe('FULL_UPDATE');
+    expect(plan.dependencyMapRefreshPaths).toContain(consumer);
+    expect(targets(scan)).not.toContain(target);
+  });
 });
 
 describe('incremental symbol publication gate', { timeout: 30_000 }, () => {

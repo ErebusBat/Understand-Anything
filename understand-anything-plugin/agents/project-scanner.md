@@ -125,11 +125,11 @@ The script:
 
 If the script exits with a non-zero status, read stderr to diagnose. You have up to 2 retry attempts (re-invocations) before failing the phase. Do NOT attempt to substitute a custom scanner — there is no second-source replacement.
 
-### Step C -- Import Resolution (bundled `extract-import-map.mjs`)
+### Step C -- Import and Typed Dependency Resolution (bundled `extract-import-map.mjs`)
 
 After Step B has produced the file list, invoke the bundled `extract-import-map.mjs` script for deterministic import extraction across all supported code languages. It uses tree-sitter for parsing and applies language-specific resolution rules in code (see `<SKILL_DIR>/extract-import-map.mjs`).
 
-**Do not** attempt to re-implement import patterns. Step B emits `path`/`language`/`fileCategory` for every file; this script consumes that list and produces the `importMap`.
+Step B emits `path`/`language`/`fileCategory` for every file; this script consumes that list and produces explicit `importMap` entries plus typed `dependencyMap` facts. Use its static results directly; never boot the application or evaluate Ruby configuration to fill gaps.
 
 Write the input JSON for the bundled script (the `files[]` array is exactly Step B's `files[]` — pass it through verbatim):
 
@@ -166,11 +166,23 @@ The output JSON has shape:
     "src/utils.ts": [],
     "README.md": [],
     "Dockerfile": []
-  }
+  },
+  "dependencyMap": {
+    "src/index.ts": [],
+    "src/utils.ts": [],
+    "README.md": [],
+    "Dockerfile": []
+  },
+  "dependencyDiagnostics": [],
+  "dependencyResolverVersion": 1
 }
 ```
 
-Read the output JSON and merge the `importMap` field directly into your final scan-result.json (under the same key — `importMap`). The format matches the project-scanner contract: every input file has an entry; non-code files have empty arrays; resolved internal paths only (external packages are dropped).
+Copy `importMap`, `dependencyMap`, `dependencyDiagnostics`, and `dependencyResolverVersion` verbatim into the final scan-result.json under the same keys. Both maps use the same project-relative file paths and have entries for every input file; arrays may be empty. `importMap` contains explicit resolved internal imports only. Keep typed facts separate.
+
+Each `dependencyMap[sourceFilePath]` value is an array of `{ target: string, type: "depends_on" | "inherits" | "routes", kind: string, reference?: string, line?: number }`. Fact kinds include `constant`, `superclass`, `include`, `extend`, `association`, and `route`. These are file-level relationships. The core constant `RUBY_DEPENDENCY_RESOLVER_VERSION` supplies `dependencyResolverVersion` (currently `1`).
+
+`dependencyDiagnostics` contains `{ path: string | null, code: string, message: string, line?: number }` records for unsupported or ambiguous static resolution. Preserve these separately from extraction infrastructure failures and surface their limitations in the scan summary. An unresolved diagnostic is not permission to invent a dependency. Arbitrary Ruby, dynamic configuration/associations, and the complete route DSL are outside this resolver's scope.
 
 **Capture stderr** when you run the bundled script. Any line starting with `Warning:` should be appended to phase warnings — the SKILL.md orchestrator captures these for the final report. The script also writes a one-line summary `extract-import-map: filesScanned=… filesWithImports=… totalEdges=…` on completion; you can ignore that line or surface it as informational.
 
@@ -182,12 +194,12 @@ Read the output JSON and merge the `importMap` field directly into your final sc
 
 After Steps A + B + C have all completed, read:
 1. `$UA_DIR/tmp/ua-scan-files.json` — output of `scan-project.mjs` (file list with language, sizeLines, fileCategory; plus `totalFiles`, `filteredByIgnore`, `estimatedComplexity`).
-2. `$UA_DIR/tmp/ua-import-map-output.json` — output of `extract-import-map.mjs` (the `importMap` field).
+2. `$UA_DIR/tmp/ua-import-map-output.json` — output of `extract-import-map.mjs` (`importMap`, `dependencyMap`, `dependencyDiagnostics`, `dependencyResolverVersion`).
 3. Your Step A in-memory notes (`name`, `rawDescription`, `readmeHead`, `frameworks`, `languages` narrative).
 
 Do NOT re-walk the file tree, re-count lines, or re-derive categories — trust `scan-project.mjs` entirely. Do NOT re-implement import resolution — trust `extract-import-map.mjs` entirely.
 
-**IMPORTANT:** The final output must NOT contain the `scriptCompleted` or `stats` fields from either bundled script, nor your transient `rawDescription` / `readmeHead` work-strings. Strip them when assembling the final JSON. The final `importMap` MUST equal the `importMap` field from `extract-import-map.mjs` verbatim (do not edit, re-sort, or filter it). The final `files` array MUST equal Step B's `files` array verbatim (do not re-order, drop, or augment it).
+**IMPORTANT:** The final output must NOT contain the `scriptCompleted` or `stats` fields from either bundled script, nor your transient `rawDescription` / `readmeHead` work-strings. Strip them when assembling the final JSON. The final `importMap`, `dependencyMap`, `dependencyDiagnostics`, and `dependencyResolverVersion` MUST equal their fields from `extract-import-map.mjs` verbatim (do not edit, re-sort, or filter them). The final `files` array MUST equal Step B's `files` array verbatim (do not re-order, drop, or augment it).
 
 Your only synthesis task in this phase is the final `description` field:
 
@@ -213,8 +225,13 @@ Then assemble the final output JSON:
   "filteredByIgnore": 0,
   "estimatedComplexity": "moderate",
   "importMap": {
-    "src/index.ts": ["src/utils.ts"]
-  }
+    "src/index.ts": [], "README.md": [], "Dockerfile": []
+  },
+  "dependencyMap": {
+    "src/index.ts": [], "README.md": [], "Dockerfile": []
+  },
+  "dependencyDiagnostics": [],
+  "dependencyResolverVersion": 1
 }
 ```
 
@@ -228,13 +245,16 @@ Then assemble the final output JSON:
 - `filteredByIgnore` (integer): directly from Step B
 - `estimatedComplexity` (string): directly from Step B
 - `importMap` (object): directly from Step C's `importMap` field
+- `dependencyMap` (object): directly from Step C's typed file dependencies
+- `dependencyDiagnostics` (object[]): directly from Step C, including unsupported and ambiguous cases
+- `dependencyResolverVersion` (integer): directly from Step C
 
 ## Critical Constraints
 
 - NEVER invent or guess file paths. Every `path` in the `files` array must come from `scan-project.mjs`'s output (which itself comes from `git ls-files` or a real directory listing).
 - NEVER include files that do not exist on disk.
 - ALWAYS validate that `totalFiles` matches the actual length of the `files` array.
-- Trust Step B for file enumeration + language detection + category assignment + line counts + complexity. Trust Step C for `importMap`. Your only synthesis is the `description` field (plus the Step A narrative fields: `name`, `frameworks`, `languages`).
+- Trust Step B for file enumeration + language detection + category assignment + line counts + complexity. Trust Step C for both dependency maps, diagnostics, and resolver version. Your only synthesis is the `description` field (plus the Step A narrative fields: `name`, `frameworks`, `languages`).
 - Do NOT re-implement file enumeration, language detection, or category assignment in your discovery script. Use the bundled `scan-project.mjs`. If the table doesn't cover your project type, file an issue rather than ad-hoc handling.
 - Do NOT attempt to re-implement import resolution. The bundled `extract-import-map.mjs` handles all 13 supported code languages (TS, JS, Python, Go, Rust, Java, Kotlin, Scala, C#, Ruby, PHP, C, C++) deterministically via tree-sitter + per-language resolvers.
 - Every file MUST have a `fileCategory` field with one of: `code`, `config`, `docs`, `infra`, `data`, `script`, `markup` — `scan-project.mjs` guarantees this; just don't strip it.
@@ -245,6 +265,6 @@ After producing the final JSON:
 
 1. Create the output directory: `mkdir -p $UA_DIR/intermediate` (the data directory — `.ua/`, or the legacy `.understand-anything/` when present)
 2. Write the JSON to: `$UA_DIR/intermediate/scan-result.json`. Use the exact output path given in your dispatch prompt if one was provided.
-3. Respond with ONLY a brief text summary: project name, total file count (with breakdown by category), detected languages, estimated complexity.
+3. Respond with ONLY a brief text summary: project name, total file count (with breakdown by category), detected languages, estimated complexity, and dependency diagnostic counts/limitations when present.
 
 Do NOT include the full JSON in your text response.

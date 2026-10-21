@@ -264,6 +264,28 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
     return result;
   }
 
+  /** Strict AST access for static resolvers. The callback must not retain nodes:
+   * their WASM tree is deleted on return. Missing grammars and syntax errors
+   * throw, so callers can report infrastructure failures separately from
+   * unsupported language constructs. No source code is executed.
+   */
+  withSyntaxTree<T>(
+    filePath: string,
+    content: string,
+    callback: (root: import("web-tree-sitter").Node) => T,
+  ): T {
+    const parser = this.getParser(filePath);
+    if (!parser) throw new Error(`Tree-sitter grammar unavailable for ${filePath}`);
+    const tree = parser.parse(content);
+    if (!tree) throw new Error(`Tree-sitter could not parse ${filePath}`);
+    try {
+      if (tree.rootNode.hasError) throw new Error(`Ruby/source syntax error in ${filePath}`);
+      return callback(tree.rootNode);
+    } finally {
+      tree.delete();
+    }
+  }
+
   /**
    * Evidence for destructive structural comparisons. Unlike analyzeFile's
    * best-effort contract, an unavailable grammar or a recovered syntax error

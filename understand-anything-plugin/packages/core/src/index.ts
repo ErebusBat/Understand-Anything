@@ -129,3 +129,8 @@ export {
   type IgnoreFilter,
 } from "./ignore-filter.js";
 export { generateStarterIgnoreFile } from "./ignore-generator.js";
+export * from "./ruby/types.js";
+export * from "./ruby/ast.js";
+export * from "./ruby/inflections.js";
+export * from "./ruby/resolver.js";
+export { extractRailsRouteDependencies } from "./ruby/rails-routes.js";

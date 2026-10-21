@@ -15,6 +15,9 @@ const hook = readFileSync(
 const analyzer = readFileSync(
   resolve(__dirname, '../../../understand-anything-plugin/agents/file-analyzer.md'), 'utf-8',
 );
+const scanner = readFileSync(
+  resolve(__dirname, '../../../understand-anything-plugin/agents/project-scanner.md'), 'utf-8',
+);
 
 describe('incremental execution contract', () => {
   it.each([skill, hook])('routes inventory and baseline updates through bundled helpers', content => {
@@ -58,5 +61,24 @@ describe('incremental execution contract', () => {
     expect(analyzer).toContain('classes[].methods');
     expect(analyzer).toContain('check the complete `previousSymbols` checklist');
     expect(analyzer).toContain('explicitly report an error with its ID/name');
+  });
+
+  it.each([skill, hook])('carries typed facts through normal and retry dispatch contracts', content => {
+    expect(content).toContain('`dependencyMap`');
+    expect(content).toContain('`dependencyDiagnostics`');
+    expect(content).toContain('`dependencyResolverVersion`');
+    expect(content).toContain('`batchImportData`, `batchDependencyData`, `neighborMap`');
+    expect(content).toContain('recoveredFromDependencyMap: true');
+    expect(content).toContain('description');
+    expect(content).toContain('resolver-version changes and missing dependency baselines are checked');
+  });
+
+  it('preserves extractor facts verbatim in scanning and keeps imports separate in analysis', () => {
+    expect(scanner).toContain('`importMap`, `dependencyMap`, `dependencyDiagnostics`, and `dependencyResolverVersion` MUST equal');
+    expect(scanner).toContain('RUBY_DEPENDENCY_RESOLVER_VERSION');
+    expect(scanner).toContain('extraction infrastructure failures');
+    expect(analyzer).toContain('a typed-only fact produces no import edge');
+    expect(analyzer).toContain('Keep file-level facts even when symbol nodes exist');
+    expect(analyzer).toContain('`description` is required because schema validation preserves it');
   });
 });

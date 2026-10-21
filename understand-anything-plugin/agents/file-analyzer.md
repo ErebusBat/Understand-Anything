@@ -48,20 +48,22 @@ cat > $UA_DIR/tmp/ua-file-analyzer-input-<batchIndex>.json << 'ENDJSON'
   "batchFiles": [
     {"path": "<path>", "language": "<language>", "sizeLines": <sizeLines>, "fileCategory": "<fileCategory>"}
   ],
-  "batchImportData": <batchImportData JSON object — provided in your dispatch prompt>
+  "batchImportData": <batchImportData JSON object — provided in your dispatch prompt>,
+  "batchDependencyData": <batchDependencyData JSON object — provided in your dispatch prompt>
 }
 ENDJSON
 ```
 
 ### Cross-batch context (neighborMap)
 
-Your dispatch prompt includes a `neighborMap` — for each file in your batch, it lists project-internal neighbors in OTHER batches (files that import yours or that you import), with their exported symbols.
+Your dispatch prompt includes a `neighborMap` — for each file in your batch, it lists project-internal neighbors outside this analysis payload connected by explicit imports or typed dependencies in either direction, with their exported symbols. During incremental analysis these can include unchanged files from the same original batch.
 
 Use neighborMap as a confidence boost for cross-batch edges (`calls`, `related`, `inherits`, `implements` to nodes outside your batch):
 
 - If your source clearly references a symbol that appears in some `neighbor.symbols`, emit the edge to `function:<neighbor.path>:<symbol>` or `class:<neighbor.path>:<symbol>` with confidence.
 - If your source references a cross-batch symbol that is NOT in neighborMap (the project-scanner may not have extracted it), you may still emit the edge if you saw it explicitly in the imported file's surface — but prefer matching neighborMap symbols when available.
 - Imports continue to use `batchImportData` (fully resolved), not neighborMap.
+- Typed file relationships use `batchDependencyData`, preserving each fact's `type` and file endpoints. A Ruby constant or `Model.find` reference does not establish a local method node; neighbor exports are not a complete Ruby constant index.
 
 The merge script's dangling-edge dropper is the safety net for genuinely unresolvable targets.
 
@@ -266,10 +268,11 @@ Using the script's structural data and file categories, create edges:
 | `contains` | File contains a function or class node you created (use for ALL function/class nodes) | `1.0` | `forward` |
 | `imports` | File imports from another project file (use `batchImportData[filePath]` from input JSON — external imports already filtered out) | `0.7` | `forward` |
 | `calls` | A function in this file calls a function in another file (infer from imports + function names when confident) | `0.8` | `forward` |
-| `inherits` | A class extends another class in the project | `0.9` | `forward` |
+| `inherits` | A class extends another class in the project, or a supplied superclass fact links its files | `0.9` | `forward` |
 | `implements` | A class implements an interface in the project | `0.9` | `forward` |
 | `exports` | File exports a function or class node you created (only for exported items — use IN ADDITION to `contains`, not instead of it) | `0.8` | `forward` |
 | `depends_on` | File has runtime dependency on another project file (broader than imports -- includes dynamic requires, lazy loads) | `0.6` | `forward` |
+| `routes` | A supplied route fact links a route file to a controller file | `0.6` | `forward` |
 | `tested_by` | Production file is exercised by a test file. Emit when you see the test importing/using the production file. Use direction `production → test` if you can; the merge script will flip inverted edges and dedupe. | `0.5` | `forward` |
 
 **Note on `tested_by`:** It's fine to emit even if you're unsure of the direction (you typically see the relationship while analyzing the *test* file, where the import points back at production). The merge script (`merge-batch-graphs.py`) canonicalizes direction to `production → test` and drops semantically broken edges (test↔test, prod↔prod, orphan endpoint). Path-convention pairing supplements anything you miss.
@@ -301,6 +304,14 @@ For every code file in this batch:
 The `batchImportData` values contain only resolved project-internal paths — external packages have already been filtered out, so every path is safe to emit. Do NOT attempt to re-resolve imports from source. Do NOT skip imports because the target lives in another batch (cross-batch references are explicitly allowed for `imports` edges, since the project-scanner already verified the path exists).
 
 **Self-check before writing the batch JSON:** sum `batchImportData[file].length` across every code file in your batch. The number of `imports` edges in your output MUST equal that sum. If it doesn't, you dropped some during enumeration — go back and add them. (A deterministic post-processing pass in `merge-batch-graphs.py` will recover anything you still miss, but it is your job to get this right at emission time so the recovery report stays empty.)
+
+**Typed dependency creation rule (all file categories):**
+
+For every file in this batch, read `batchDependencyData[filePath]` (an empty or absent array means no supplied facts). Each fact has `target`, `type` (`depends_on`, `inherits`, or `routes`), `kind`, and optional `reference`/`line`. Transcribe every fact with the supplied type, `direction: "forward"`, and whole-file endpoints `file:<filePath>` → `file:<target>`. Use the actual whole-file ID instead when a known node uses another category prefix. Preserve cross-batch targets. Weights are `0.9` for `inherits`, `0.6` for `depends_on` and `routes`.
+
+Deduplicate by `(source, target, type, direction)` and retain all distinct facts in `description`, for example `Resolved dependency facts: association Account (line 8); constant Account (line 12).` Custom evidence properties may also be included, but `description` is required because schema validation preserves it. Keep file-level facts even when symbol nodes exist; emit additional symbol-level inheritance only when both actual class nodes are known. Include/extend facts retain their supplied dependency type and evidence.
+
+Only explicit `batchImportData` entries produce `imports`; a typed-only fact produces no import edge. Neither associations nor routes imply a method-call edge. Before writing, verify that every distinct `(filePath, target, type)` fact has an edge and its evidence in `description`. Merge recovery fills omissions and stamps `recoveredFromDependencyMap: true` on recovered and existing matching edges for deterministic pruning.
 
 **Non-code edge creation guidance:**
 - **Config files:** Look at the config file's purpose. `tsconfig.json` configures all `.ts` files; `package.json` configures the build. Create `configures` edges to the most relevant entry points or directories.
@@ -475,8 +486,8 @@ Use these hints for common edge patterns:
 
 ## Critical Constraints
 
-- NEVER invent file paths. Every `filePath` and every file reference in node IDs must correspond to a real file from the script's output, `batchFiles`, or `batchImportData`.
-- NEVER create edges to nodes that do not exist. Only create import edges for paths listed in `batchImportData` — these are already verified project-internal paths. For non-code edges (configures, documents, deploys, etc.), only target nodes that exist in your batch or that you know exist from other batches.
+- NEVER invent file paths. Every `filePath` and every file reference in node IDs must correspond to a real file from the script's output, `batchFiles`, `batchImportData`, or `batchDependencyData`.
+- NEVER create edges to nodes that do not exist. Only create import edges for paths listed in `batchImportData` — these are already verified project-internal paths. Supplied `batchDependencyData` facts likewise authorize whole-file targets in other batches; merge skips missing endpoints. For inferred non-code edges (configures, documents, deploys, etc.), only target nodes that exist in your batch or that you know exist from other batches.
 - ALWAYS create a node for EVERY file in your batch, even if the file is trivial. Use the appropriate node type based on fileCategory.
 - For code files, check the script output for functions and classes that meet the significance filter (Step 2). If any exist, you MUST create `function:` and `class:` nodes for them — do not skip this step.
 - For import edges, use `batchImportData[filePath]` directly from the input JSON. Do NOT attempt to resolve import paths yourself -- the project scanner already did this deterministically.
@@ -521,7 +532,7 @@ Write part `k` (1-indexed) to `$UA_DIR/intermediate/batch-<batchIndex>-part-<k>.
 For each file written, verify:
 - Valid JSON.
 - `nodes` array exists and is well-formed.
-- For every edge: `source` and `target` both appear as either (a) a node `id` in this part's nodes, OR (b) a `file:<path>` reference where `<path>` is in `neighborMap` or `batchImportData`, OR (c) a `function:<path>:<symbol>` / `class:<path>:<symbol>` reference where `<symbol>` is in some `neighbor.symbols`.
+- For every edge: `source` and `target` both appear as either (a) a node `id` in this part's nodes, OR (b) a whole-file reference where `<path>` is in `neighborMap`, `batchImportData`, or `batchDependencyData`, OR (c) a `function:<path>:<symbol>` / `class:<path>:<symbol>` reference where `<symbol>` is in some `neighbor.symbols`.
 
 If validation fails on a part, do NOT silently rebuild. Respond with an explicit error stating which part failed, which edge(s) failed validation, and why. The dispatching session can then retry.
 
