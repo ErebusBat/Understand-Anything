@@ -106,14 +106,15 @@ export function collectSymbolEvidence(root: Node, structure: StructuralAnalysis,
     if (node !== root && CLASS_NODES.has(node.type)) {
       const target = scopes.classTarget(node);
       const classScope = target.kind === "class" ? FILE_SCOPE : target;
-      const className = classExpression(node) ? target.kind === "class" ? target.name : null : declaredName;
-      if (declaredName) {
-        classScopes.set(JSON.stringify([declaredName, node.startPosition.row + 1, node.endPosition.row + 1]), target);
-        classes.push({ name: declaredName, scope: classScope, lineRange: [node.startPosition.row + 1, node.endPosition.row + 1] });
+      const evidenceName = isRuby && target.kind === "class" ? target.name : declaredName;
+      const className = classExpression(node) ? target.kind === "class" ? target.name : null : evidenceName;
+      if (evidenceName) {
+        classScopes.set(JSON.stringify([evidenceName, node.startPosition.row + 1, node.endPosition.row + 1]), target);
+        classes.push({ name: evidenceName, scope: classScope, lineRange: [node.startPosition.row + 1, node.endPosition.row + 1] });
       }
       if (!structure.classes.some(cls => cls.name === className && cls.lineRange[0] === node.startPosition.row + 1
         && cls.lineRange[1] === node.endPosition.row + 1)) {
-        coverage.gaps.push({ kind: "class", scope: classScope, name: className,
+        coverage.gaps.push({ kind: "class", scope: classScope, name: isRuby && target.kind === "unknown" ? null : className,
           lineRange: [node.startPosition.row + 1, node.endPosition.row + 1], reason: "Class declaration is not covered by structural extraction" });
       }
     }

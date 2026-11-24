@@ -1,4 +1,5 @@
 import type { TreeSitterNode as Node } from "./extractors/types.js";
+import { rubyConstant } from "../ruby/ast.js";
 
 export function unescaped(text: string): boolean {
   return !text.includes("\\") && !text.includes("`") && !text.startsWith("@")
@@ -22,6 +23,15 @@ export function identifier(node: Node | null | undefined): string | null {
     "shorthand_property_identifier", "shorthand_property_identifier_pattern"].includes(node.type)
     && unescaped(node.text) ? node.text : null;
 }
+
+/** A bare constant is defined on the surrounding class/module. A compact
+ * relative path first looks up its receiver and can resolve outside it. */
+export function nestedRubyClassName(node: Node | null, parentName: string): string | null {
+  if (node?.type === "constant") return `${parentName}::${node.text}`;
+  const path = rubyConstant(node);
+  return path?.startsWith("::") ? path : null;
+}
+
 export function declarationName(node: Node | null | undefined): string | null {
   return identifier(node) ?? literal(node);
 }

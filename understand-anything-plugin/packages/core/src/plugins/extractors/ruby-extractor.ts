@@ -1,6 +1,7 @@
 import type { StructuralAnalysis, CallGraphEntry } from "../../types.js";
 import type { LanguageExtractor, TreeSitterNode } from "./types.js";
 import { findChild } from "./base-extractor.js";
+import { nestedRubyClassName } from "../symbol-ast.js";
 
 /**
  * Set of method names that Ruby uses for imports.
@@ -139,20 +140,14 @@ export class RubyExtractor implements LanguageExtractor {
           break;
 
         case "class":
-          this.extractClass(node, classes, functions);
-          exports.push({
-            name: this.getClassName(node),
-            lineNumber: node.startPosition.row + 1,
-          });
+        case "module": {
+          const name = node.childForFieldName("name")?.text;
+          if (name) {
+            this.extractClass(node, name, classes, functions);
+            exports.push({ name, lineNumber: node.startPosition.row + 1 });
+          }
           break;
-
-        case "module":
-          this.extractModule(node, classes, functions);
-          exports.push({
-            name: this.getModuleName(node),
-            lineNumber: node.startPosition.row + 1,
-          });
-          break;
+        }
 
         case "call":
           this.extractTopLevelCall(node, imports);
@@ -249,18 +244,6 @@ export class RubyExtractor implements LanguageExtractor {
     return nameNode ? nameNode.text : "";
   }
 
-  private getClassName(node: TreeSitterNode): string {
-    const nameNode = node.childForFieldName("name");
-    if (!nameNode) return "";
-    // Can be `constant` ("Foo") or `scope_resolution` ("Foo::Bar")
-    return nameNode.text;
-  }
-
-  private getModuleName(node: TreeSitterNode): string {
-    const nameNode = node.childForFieldName("name");
-    return nameNode ? nameNode.text : "";
-  }
-
   private extractMethod(
     node: TreeSitterNode,
     functions: StructuralAnalysis["functions"],
@@ -301,75 +284,29 @@ export class RubyExtractor implements LanguageExtractor {
     });
   }
 
+  /** Walk direct class and module bodies. Methods and properties belong to
+   * the immediate declaration, even when two nested classes share a basename. */
   private extractClass(
     node: TreeSitterNode,
+    name: string,
     classes: StructuralAnalysis["classes"],
     functions: StructuralAnalysis["functions"],
   ): void {
-    const name = this.getClassName(node);
-    if (!name) return;
-
     const methods: string[] = [];
     const properties: string[] = [];
-
-    const body = node.childForFieldName("body");
-    if (body) {
-      this.extractClassBody(body, methods, properties, functions);
-    }
-
     classes.push({
       name,
-      lineRange: [
-        node.startPosition.row + 1,
-        node.endPosition.row + 1,
-      ],
+      lineRange: [node.startPosition.row + 1, node.endPosition.row + 1],
       methods,
       properties,
     });
-  }
-
-  private extractModule(
-    node: TreeSitterNode,
-    classes: StructuralAnalysis["classes"],
-    functions: StructuralAnalysis["functions"],
-  ): void {
-    const name = this.getModuleName(node);
-    if (!name) return;
-
-    const methods: string[] = [];
-    const properties: string[] = [];
 
     const body = node.childForFieldName("body");
-    if (body) {
-      this.extractClassBody(body, methods, properties, functions);
-    }
-
-    classes.push({
-      name,
-      lineRange: [
-        node.startPosition.row + 1,
-        node.endPosition.row + 1,
-      ],
-      methods,
-      properties,
-    });
-  }
-
-  /**
-   * Extract methods and properties from a class/module body_statement.
-   * Also pushes each method into the top-level functions array.
-   */
-  private extractClassBody(
-    body: TreeSitterNode,
-    methods: string[],
-    properties: string[],
-    functions: StructuralAnalysis["functions"],
-  ): void {
-    for (let i = 0; i < body.childCount; i++) {
-      const member = body.child(i);
-      if (!member) continue;
-
-      if (member.type === "method") {
+    for (const member of body?.namedChildren ?? []) {
+      if (member.type === "class" || member.type === "module") {
+        const nestedName = nestedRubyClassName(member.childForFieldName("name"), name);
+        if (nestedName) this.extractClass(member, nestedName, classes, functions);
+      } else if (member.type === "method") {
         const nameNode = member.childForFieldName("name");
         if (nameNode) {
           methods.push(nameNode.text);

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { createRequire } from "node:module";
 import { RubyExtractor } from "../ruby-extractor.js";
+import { collectSymbolEvidence } from "../../symbol-evidence.js";
 
 const require = createRequire(import.meta.url);
 
@@ -33,6 +34,54 @@ describe("RubyExtractor", () => {
 
   it("has correct languageIds", () => {
     expect(extractor.languageIds).toEqual(["ruby"]);
+  });
+
+  it("keeps directly nested declarations and method ownership distinct across namespaces", () => {
+    const { tree, parser, root } = parse(`module App::Graph
+  module Queries
+    class Base
+      attr_reader :item
+      def call(id); end
+    end
+  end
+  class Base
+    def self.call; end
+  end
+end`);
+    try {
+      const structure = extractor.extractStructure(root);
+      expect(structure.classes.map(({ name, methods, properties }) => [name, methods, properties])).toEqual([
+        ["App::Graph", [], []], ["App::Graph::Queries", [], []],
+        ["App::Graph::Queries::Base", ["call"], ["item"]], ["App::Graph::Base", ["self.call"], []],
+      ]);
+      expect(structure.functions.map(fn => [fn.name, fn.params, fn.lineRange])).toEqual([
+        ["call", ["id"], [5, 5]], ["self.call", [], [9, 9]],
+      ]);
+      expect(structure.exports.map(entry => entry.name)).toEqual(["App::Graph"]);
+      const evidence = collectSymbolEvidence(root, structure, "ruby");
+      expect(evidence.classes.map(cls => [cls.name, cls.scope.kind])).toEqual(structure.classes.map(cls => [cls.name, "file"]));
+      expect(evidence.functions.map(fn => [fn.name, fn.scope])).toEqual([
+        ["call", { kind: "class", name: "App::Graph::Queries::Base" }],
+        ["self.call", { kind: "class", name: "App::Graph::Base" }],
+      ]);
+      expect(evidence.coverage.gaps).toEqual([]);
+    } finally { tree.delete(); parser.delete(); }
+  });
+
+  it("distinguishes a root-qualified class from a nested compact path with an unknown receiver", () => {
+    const { tree, parser, root } = parse(`module Shop
+  class ::Billing::Invoice; end
+  class Billing::Payment
+    def call; end
+  end
+end`);
+    try {
+      const structure = extractor.extractStructure(root);
+      expect(structure.classes.map(cls => cls.name)).toEqual(["Shop", "::Billing::Invoice"]);
+      const evidence = collectSymbolEvidence(root, structure, "ruby");
+      expect(evidence.coverage.gaps).toContainEqual(expect.objectContaining({ kind: "class", scope: { kind: "unknown" }, name: null }));
+      expect(evidence.coverage.gaps).toContainEqual(expect.objectContaining({ kind: "callable", scope: { kind: "unknown" }, name: "call" }));
+    } finally { tree.delete(); parser.delete(); }
   });
 
   // ---- Functions / Methods ----

@@ -1,5 +1,5 @@
 import type { TreeSitterNode as Node } from "./extractors/types.js";
-import { classExpression, identifier, unwrap } from "./symbol-ast.js";
+import { classExpression, identifier, nestedRubyClassName, unwrap } from "./symbol-ast.js";
 
 /** Local scope is positive knowledge of separation, never a wildcard. */
 export type SymbolScope =
@@ -99,6 +99,16 @@ export function buildSymbolScopes(root: Node, language: string) {
         const target = region.target();
         return region.directValue === node.id || target.kind === "local" ? target : UNKNOWN_SCOPE;
       } : classBinding(name, enclosing, node);
+      if (language === "ruby" && enclosing.kind === "class") {
+        const parent = enclosing.receiver();
+        const direct = node.parent?.type === "body_statement" && node.parent.parent?.id === enclosing.id;
+        // A declaration below a conditional or evaluator can still define a
+        // real constant. A local-only scope would incorrectly prove deletion.
+        classTarget = fixed(parent);
+        if (parent.kind === "class") {
+          classTarget = direct ? fixed(namedScope(nestedRubyClassName(nameNode, parent.name))) : unknownTarget;
+        }
+      }
       // Expression names are internal; declaration names bind outside as well.
       if (!expression && nameNode) bind(enclosing, name, node, classTarget);
       scope = makeScope(node, enclosing, "class", classTarget, false);

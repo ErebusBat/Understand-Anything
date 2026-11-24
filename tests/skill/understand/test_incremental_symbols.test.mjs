@@ -18,6 +18,17 @@ const compare = (oldNodes, newNodes, oldSource, newSource) => compareFileSymbols
 );
 
 describe('incremental symbol matching', () => {
+  it('protects a nested Ruby method across compact, conditional, and sibling class declarations', () => {
+    const path = 'src/orders.rb';
+    const parseRuby = source => parser.analyzeFileStrict(path, source);
+    const before = parseRuby('module Billing\n class Order\n def process; end\n end\nend');
+    const saved = graph([node('Billing::Order.process', { id: `function:${path}:Billing::Order.process`, filePath: path })]);
+    const missing = source => compareFileSymbols(saved, graph([]), before, parseRuby(source)).missing[0].status;
+    expect(missing('class Billing::Order\n def process; end\nend')).toBe('still-present');
+    expect(missing('module Billing\n if enabled?\n class Order\n def process; end\n end\n end\nend')).toBe('unknown');
+    expect(missing('module Other\n class Order\n def process; end\n end\nend')).toBe('deleted');
+  });
+
   it.each(['attr :name', 'attr "name"', 'attr :"name"', 'attr :name, true', 'attr_reader :name',
     'attr_writer :name', 'attr_accessor :name', 'obj.attr', 'attr_writer "run"', 'attr_writer :"run"'])('allows unrelated Ruby deletion beside %s', accessor => {
     const before = parser.analyzeFileStrict('a.rb', 'class A\n def run; end\nend');
