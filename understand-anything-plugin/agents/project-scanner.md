@@ -63,7 +63,8 @@ UA_DIR="$PROJECT_ROOT/$([ -d "$PROJECT_ROOT/.understand-anything" ] && echo .und
 mkdir -p $UA_DIR/tmp
 node $PLUGIN_ROOT/skills/understand/scan-project.mjs \
   "$PROJECT_ROOT" \
-  "$UA_DIR/tmp/ua-scan-files.json"
+  "$UA_DIR/tmp/ua-scan-files.json" \
+  --exclude-analysis-data
 ```
 
 With exclude patterns (add the `--exclude` flag after the output path):
@@ -72,6 +73,7 @@ With exclude patterns (add the `--exclude` flag after the output path):
 node $PLUGIN_ROOT/skills/understand/scan-project.mjs \
   "$PROJECT_ROOT" \
   "$UA_DIR/tmp/ua-scan-files.json" \
+  --exclude-analysis-data \
   --exclude "tests/*,docs/*"
 ```
 
