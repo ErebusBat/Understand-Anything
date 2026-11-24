@@ -7,6 +7,14 @@ let plugin: TreeSitterPlugin;
 beforeAll(async () => { plugin = new TreeSitterPlugin([rubyConfig]); await plugin.init(); });
 
 describe("Ruby grammar compatibility", () => {
+  it.each(["config.ru", "app.gemspec", "config/watch.god", "services/shop/Gemfile", "Rakefile", "Brewfile"])(
+    "selects the Ruby grammar for %s", path => {
+      expect(plugin.analyzeFileStrict(path, "def boot; end")).toMatchObject({
+        status: "succeeded", language: "ruby", structure: { functions: [{ name: "boot" }] },
+      });
+    },
+  );
+
   it("parses an adjacent append operator inside a method without inventing a heredoc", () => {
     const source = "def setter(value)\n model.send(attribute.to_s<<'=', value)\nend";
     const operators = plugin.withSyntaxTree("setter.rb", source, root => {

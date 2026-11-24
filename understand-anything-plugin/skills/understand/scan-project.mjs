@@ -93,6 +93,7 @@ try {
 }
 
 const { createIgnoreFilter, resolveUaDir } = core;
+const languageRegistry = core.LanguageRegistry.createDefault();
 
 // ---------------------------------------------------------------------------
 // Language detection
@@ -136,9 +137,7 @@ const LANGUAGE_BY_EXT = Object.freeze({
   '.cs': 'csharp',
   '.swift': 'swift',
   '.lua': 'lua',
-  // Ruby / PHP
-  '.rb': 'ruby',
-  '.rake': 'ruby',
+  // PHP
   '.php': 'php',
   // C / C++
   '.c': 'c',
@@ -247,18 +246,8 @@ export function detectLanguage(filePath) {
   const dotKey = dotfileKey(base);
   if (dotKey && LANGUAGE_BY_EXT[dotKey]) return LANGUAGE_BY_EXT[dotKey];
 
-  if (ext) {
-    const byExt = LANGUAGE_BY_EXT[ext];
-    if (byExt) return byExt;
-    // Unknown extension → drop the leading dot, lowercase. Never null.
-    return ext.slice(1);
-  }
-
-  // No-extension file — try filename table.
-  const byFilename = LANGUAGE_BY_FILENAME[base];
-  if (byFilename) return byFilename;
-
-  return 'unknown';
+  return LANGUAGE_BY_EXT[ext] ?? LANGUAGE_BY_FILENAME[base]
+    ?? languageRegistry.getForFile(filePath)?.id ?? (ext.slice(1) || 'unknown');
 }
 
 /**

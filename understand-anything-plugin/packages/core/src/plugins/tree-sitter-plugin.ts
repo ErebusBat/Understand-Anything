@@ -7,6 +7,8 @@ import type {
   CallGraphEntry,
 } from "../types.js";
 import type { LanguageConfig } from "../languages/types.js";
+import { LanguageRegistry } from "../languages/language-registry.js";
+import { typescriptConfig, javascriptConfig } from "../languages/configs/index.js";
 import type { LanguageExtractor } from "./extractors/types.js";
 import { collectSymbolEvidence, type SymbolEvidence } from "./symbol-evidence.js";
 import { builtinExtractors } from "./extractors/index.js";
@@ -40,7 +42,7 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
     | (new () => TreeSitterParser)
     | null = null;
   private _languages = new Map<string, TreeSitterLanguage>();
-  private _extensionToLang = new Map<string, string>();
+  private languageRegistry = new LanguageRegistry();
   // One reusable parser per language key. web-tree-sitter parsers are reusable
   // across parse() calls (only the Tree is per-parse, and it's still deleted);
   // creating + setLanguage + delete on every call wasted an allocation and a
@@ -67,28 +69,9 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
       this.configs = [];
     }
 
-    // Derive supported languages and extension map from configs
-    const langs: string[] = [];
-    for (const config of this.configs) {
-      langs.push(config.id);
-      for (const ext of config.extensions) {
-        const key = ext.startsWith(".") ? ext : `.${ext}`;
-        this._extensionToLang.set(key, config.id);
-      }
-    }
-
-    // Fallback for backward compat when no configs provided
-    if (langs.length === 0) {
-      langs.push("typescript", "javascript");
-      this._extensionToLang.set(".ts", "typescript");
-      this._extensionToLang.set(".tsx", "typescript");
-      this._extensionToLang.set(".js", "javascript");
-      this._extensionToLang.set(".mjs", "javascript");
-      this._extensionToLang.set(".cjs", "javascript");
-      this._extensionToLang.set(".jsx", "javascript");
-    }
-
-    this.languages = langs;
+    const supported = this.configs.length ? this.configs : [typescriptConfig, javascriptConfig];
+    for (const config of supported) this.languageRegistry.register(config);
+    this.languages = supported.map(config => config.id);
 
     // Register extractors (default: all builtin extractors)
     if (extractors && extractors.length > 0) {
@@ -120,7 +103,7 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
     // Special case: .tsx needs its own grammar
     if (ext === ".tsx") return "tsx";
 
-    return this._extensionToLang.get(ext) ?? null;
+    return this.languageRegistry.getForFile(filePath)?.id ?? null;
   }
 
   /**

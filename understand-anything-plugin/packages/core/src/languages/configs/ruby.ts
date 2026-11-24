@@ -3,7 +3,8 @@ import type { LanguageConfig } from "../types.js";
 export const rubyConfig = {
   id: "ruby",
   displayName: "Ruby",
-  extensions: [".rb", ".rake"],
+  extensions: [".rb", ".rake", ".ru", ".gemspec", ".god"],
+  filenames: ["Gemfile", "Rakefile", "Brewfile"],
   treeSitter: {
     wasmPackage: "@understand-anything/tree-sitter-ruby-wasm",
     wasmFile: "tree-sitter-ruby.wasm",

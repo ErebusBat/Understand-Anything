@@ -37,13 +37,13 @@ export class LanguageRegistry {
 
   getForFile(filePath: string): LanguageConfig | null {
     // Try filename-based lookup first (more specific: docker-compose.yml, Makefile, etc.)
-    const basename = filePath.split("/").pop() ?? filePath;
+    const basename = filePath.split(/[\\/]/).pop() ?? filePath;
     const filenameMatch = this.byFilename.get(basename.toLowerCase());
     if (filenameMatch) return filenameMatch;
     // Fall back to extension-based lookup
-    const lastDot = filePath.lastIndexOf(".");
+    const lastDot = basename.lastIndexOf(".");
     if (lastDot === -1) return null;
-    const ext = filePath.slice(lastDot).toLowerCase();
+    const ext = basename.slice(lastDot).toLowerCase();
     return this.getByExtension(ext);
   }
 

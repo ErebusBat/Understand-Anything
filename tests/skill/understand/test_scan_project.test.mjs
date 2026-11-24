@@ -180,6 +180,15 @@ describe('scan-project.mjs — language detection', () => {
     expect(byPath(r.output, 'f.hpp').language).toBe('cpp');
   });
 
+  it('recognizes Ruby entry points and DSL files from the core language registry', () => {
+    const paths = ['Gemfile', 'Brewfile', 'Rakefile', 'config.ru', 'sample.gemspec', 'watch.god'];
+    projectRoot = setupTree(Object.fromEntries(paths.map(path => [path, 'require "example"\n'])));
+    const { output } = runScript(projectRoot);
+    for (const path of paths) {
+      expect(byPath(output, path)).toMatchObject({ language: 'ruby', fileCategory: 'code' });
+    }
+  });
+
   it('maps web markup (HTML, CSS) to their language ids', () => {
     projectRoot = setupTree({
       'a.html': '<!doctype html><html></html>\n',
