@@ -163,6 +163,22 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics.map(d=>d.code)).toContain("unsupported_conditional_declaration");
   });
 
+  it("resolves namespaced literal reads but does not infer namespaces, aliases or conditional values from them", () => {
+    const {resolver} = setup({
+      "app/services/settings.rb": `module Settings
+        FEATURE = 'enabled'.freeze
+        OPTIONS = {cache: true}
+        ALIAS = User
+        MAYBE = 1 if enabled?
+        REPLACED = 1
+      end`,
+      "config/initializers/values.rb": "module Settings; REPLACED = 2; end",
+      "probe.rb": "Settings::FEATURE; Settings::OPTIONS; Settings::FEATURE::Child; Settings::ALIAS; Settings::MAYBE; Settings::REPLACED",
+    });
+    expect(resolver.getDependencies("probe.rb").map(f => f.reference)).toEqual(["Settings::FEATURE", "Settings::OPTIONS"]);
+    expect(resolver.resolveConstant("Settings::FEATURE")).toBeNull();
+  });
+
   it("extracts constant reads from initializers without turning assigned aliases into autoload targets", () => {
     const {resolver} = setup({
       "app/models/user.rb": "class User; end",

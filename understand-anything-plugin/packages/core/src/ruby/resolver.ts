@@ -15,6 +15,7 @@ interface Declaration {
   mixins: string[];
   conditional: boolean;
   wrapsDeclarations?: boolean;
+  literalValue?: boolean;
 }
 interface Reference {
   reference: string;
@@ -31,6 +32,7 @@ export interface RubyResolveOptions {
   path?: string;
   line?: number;
   association?: boolean;
+  valueRead?: boolean;
 }
 
 const ASSOCIATIONS = new Set(["belongs_to", "has_one", "has_many", "has_and_belongs_to_many"]);
@@ -39,6 +41,12 @@ const FRAMEWORK_BASES = new Set(["ActiveRecord::Base", "ActionController::Base",
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
+
+function assignsLiteral(node: RubyAstNode | null): boolean {
+  const call = rubyCall(node);
+  const value = call?.method === "freeze" && !call.block && !call.args.length ? call.receiver : node;
+  return !!value && (["array", "hash", "float", "regex"].includes(value.type) || rubyLiteral(value) !== undefined);
+}
 
 /** Paths are inventory-relative; both spelling and resolved symlinks must remain
  * inside the selected checkout. This function reads no target source. */
@@ -63,6 +71,7 @@ export class RubyDependencyResolver {
   readonly configuration: RubyConfiguration;
   private readonly facts = new Map<string, RubyFileFacts>();
   private readonly bindings = new Map<string, Set<string>>();
+  private readonly literalBindings = new Map<string, string>();
   private readonly declarations = new Map<string, Declaration[]>();
   private readonly namespaces = new Set<string>();
   private readonly blocked = new Set<string>();
@@ -209,10 +218,14 @@ export class RubyDependencyResolver {
         const raw = rubyConstant(node.childForFieldName("left"));
         if (raw) {
           const name = raw.startsWith("::") ? raw.slice(2) : nesting[0] ? `${nesting[0]}::${raw}` : raw;
-          result.declarations.push({name, kind: "assignment", path, line: node.startPosition.row + 1, nesting: [...nesting], mixins: [], conditional});
           // The left side introduces a binding. Its initializer still reads
           // constants, even when the assigned name cannot be resolved later.
           const value = node.childForFieldName("right");
+          result.declarations.push({
+            name, kind: "assignment", path, line: node.startPosition.row + 1, nesting: [...nesting], mixins: [],
+            conditional: conditional || inMethod,
+            literalValue: node.type === "assignment" && !raw.includes("::") && assignsLiteral(value),
+          });
           if (value) visit(value, nesting, owner, inMethod, conditional);
           return;
         }
@@ -285,6 +298,7 @@ export class RubyDependencyResolver {
     const roots = [...new Map(this.configuration.roots.map(r => [r.path, r])).values()].sort((a,b) => b.path.length - a.path.length || compare(a.path,b.path));
     const expectedOwners = new Map<string, string[]>();
     const classWrappers = new Set<Declaration>();
+    const literalCandidates = new Set<Declaration>();
     for (const [path, facts] of this.facts) {
       if (!path.endsWith(".rb")) continue;
       const root = roots.find(r => path.startsWith(r.path + "/"));
@@ -299,6 +313,9 @@ export class RubyDependencyResolver {
         // targets or independent reopenings of the namespace's own file.
         if (expected?.startsWith(declaration.name + "::") && declaration.kind === "module" && !declaration.conditional) continue;
         if (expected?.startsWith(declaration.name + "::") && declaration.wrapsDeclarations) classWrappers.add(declaration);
+        if (corroborated && declaration.literalValue && !declaration.conditional && declaration.name.startsWith(expected + "::")) {
+          literalCandidates.add(declaration);
+        }
         const list = this.declarations.get(declaration.name) ?? [];
         list.push(declaration);
         this.declarations.set(declaration.name, list);
@@ -324,6 +341,12 @@ export class RubyDependencyResolver {
       this.addDiagnostic({path:null, code:"ambiguous_autoload_root", message:`Multiple roots map ${name}: ${paths.sort(compare).join(", ")}; loader precedence is unknown`});
     }
     for (const [name, definitions] of this.declarations) {
+      const definition = definitions[0];
+      if (definitions.length === 1 && literalCandidates.has(definition) && !expectedOwners.has(name)) {
+        this.literalBindings.set(name, definition.path);
+        this.blocked.add(name); // A literal cannot supply a class, module or child namespace.
+        continue;
+      }
       // A child file can open its parent class just to declare the nested
       // class/module. Keep the canonical class's superclass and model identity.
       if (this.bindings.has(name) && definitions.length > 1 && definitions.every(d => d.kind === "class" && !d.conditional)) {
@@ -356,6 +379,9 @@ export class RubyDependencyResolver {
   }
 
   private exact(name: string, options: RubyResolveOptions): string | null {
+    if (options.valueRead && this.literalBindings.has(name) && !this.blockedPrefix(name.slice(0, name.lastIndexOf("::")))) {
+      return this.literalBindings.get(name)!;
+    }
     if (this.blockedPrefix(name)) {
       this.addDiagnostic({path: options.path ?? null, code: "ambiguous_constant_reference", message: `Constant ${name} has shadowing or multiple-definition evidence`, ...(options.line ? {line:options.line} : {})});
       return null;
@@ -442,7 +468,7 @@ export class RubyDependencyResolver {
         this.addDiagnostic({path, code:"unsupported_association_context", line:ref.line, message:`Association owner ${ref.owner} is not a known ActiveRecord model or model concern`});
         continue;
       }
-      const target = this.resolveConstant(ref.reference, {nesting:ref.nesting, path, line:ref.line, association:ref.kind === "association"});
+      const target = this.resolveConstant(ref.reference, {nesting:ref.nesting, path, line:ref.line, association:ref.kind === "association", valueRead:ref.kind === "constant"});
       if (!target || target === path) continue;
       found.push({target, type:ref.kind === "superclass" ? "inherits" : "depends_on", kind:ref.kind, reference:ref.displayReference ?? ref.reference, line:ref.line});
     }
