@@ -2,6 +2,19 @@ import { LanguageConfigSchema } from "./types.js";
 import type { LanguageConfig } from "./types.js";
 import { builtinLanguageConfigs } from "./configs/index.js";
 
+function shebangLanguage(content: string): string | null {
+  if (!content.startsWith("#!")) return null;
+  const [command, ...args] = content.slice(2, 256).split(/[\r\n]/, 1)[0].trim().split(/[ \t]+/);
+  const interpreter = command.split("/").pop() === "env"
+    ? args[args[0] === "-S" ? 1 : 0] : command;
+  const name = interpreter?.split("/").pop() ?? "";
+  if (/^ruby(?:\d+(?:\.\d+)*)?$/.test(name)) return "ruby";
+  if (/^python(?:\d+(?:\.\d+)*)?$/.test(name)) return "python";
+  if (name === "node" || name === "nodejs") return "javascript";
+  if (["bash", "dash", "sh", "zsh", "ksh"].includes(name)) return "shell";
+  return null;
+}
+
 /**
  * Registry for language configurations. Maps language ids and file extensions
  * to their corresponding LanguageConfig objects.
@@ -35,16 +48,19 @@ export class LanguageRegistry {
     return this.byExtension.get(key) ?? null;
   }
 
-  getForFile(filePath: string): LanguageConfig | null {
+  getForFile(filePath: string, content?: string): LanguageConfig | null {
     // Try filename-based lookup first (more specific: docker-compose.yml, Makefile, etc.)
     const basename = filePath.split(/[\\/]/).pop() ?? filePath;
     const filenameMatch = this.byFilename.get(basename.toLowerCase());
     if (filenameMatch) return filenameMatch;
     // Fall back to extension-based lookup
     const lastDot = basename.lastIndexOf(".");
-    if (lastDot === -1) return null;
-    const ext = basename.slice(lastDot).toLowerCase();
-    return this.getByExtension(ext);
+    if (lastDot >= 0) {
+      const extensionMatch = this.getByExtension(basename.slice(lastDot));
+      if (extensionMatch || lastDot > 0) return extensionMatch;
+    }
+    const language = content && shebangLanguage(content);
+    return language ? this.getById(language) : null;
   }
 
   getAllLanguages(): LanguageConfig[] {

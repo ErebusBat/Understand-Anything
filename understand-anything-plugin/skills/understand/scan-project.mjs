@@ -231,7 +231,7 @@ const LANGUAGE_BY_FILENAME = Object.freeze({
  * extension. Downstream consumers rely on this field always being a string
  * (see project-scanner.md Step 3 "Fallback" note).
  */
-export function detectLanguage(filePath) {
+export function detectLanguage(filePath, contentHead) {
   const base = basename(filePath);
   const ext = extname(filePath).toLowerCase();
 
@@ -246,8 +246,9 @@ export function detectLanguage(filePath) {
   const dotKey = dotfileKey(base);
   if (dotKey && LANGUAGE_BY_EXT[dotKey]) return LANGUAGE_BY_EXT[dotKey];
 
-  return LANGUAGE_BY_EXT[ext] ?? LANGUAGE_BY_FILENAME[base]
-    ?? languageRegistry.getForFile(filePath)?.id ?? (ext.slice(1) || 'unknown');
+  const byFilename = Object.hasOwn(LANGUAGE_BY_FILENAME, base) ? LANGUAGE_BY_FILENAME[base] : null;
+  return LANGUAGE_BY_EXT[ext] ?? byFilename
+    ?? languageRegistry.getForFile(filePath, contentHead)?.id ?? (ext.slice(1) || 'unknown');
 }
 
 /**
@@ -374,7 +375,7 @@ const INFRA_FILENAMES = new Set([
  * 4. Extension-based mapping (CATEGORY_BY_EXT).
  * 5. Fallback: `code` (matches the spec — "All other extensions").
  */
-export function detectCategory(filePath) {
+export function detectCategory(filePath, language) {
   const base = basename(filePath);
   const ext = extname(filePath).toLowerCase();
   const posix = filePath.split(sep).join('/');
@@ -417,7 +418,7 @@ export function detectCategory(filePath) {
   // config). We don't enumerate every possible config filename here — that
   // gets handled by the language map's no-extension entries upstream.
   // Anything not matched falls through to `code`.
-  return 'code';
+  return language === 'shell' ? 'script' : 'code';
 }
 
 // ---------------------------------------------------------------------------
@@ -819,11 +820,14 @@ async function main() {
       continue;
     }
     updateContentDigest(contentHash, rel, scanned.bytes);
+    const contentHead = scanned.bytes[0] === 0x23 && scanned.bytes[1] === 0x21
+      ? scanned.bytes.toString('utf8', 0, 256) : undefined;
+    const language = detectLanguage(rel, contentHead);
     fileEntries.push({
       path: rel,
-      language: detectLanguage(rel),
+      language,
       sizeLines: scanned.sizeLines,
-      fileCategory: detectCategory(rel),
+      fileCategory: detectCategory(rel, language),
     });
   }
 

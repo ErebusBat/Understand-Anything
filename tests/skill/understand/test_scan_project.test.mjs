@@ -189,6 +189,27 @@ describe('scan-project.mjs — language detection', () => {
     }
   });
 
+  it('uses the interpreter of extensionless launchers and keeps named files authoritative', () => {
+    projectRoot = setupTree({
+      'script/rails': '#!/usr/bin/env ruby\nrequire "rails"\n',
+      'git-hooks/pre-commit': '#!/usr/bin/env -S ruby -w\n',
+      'script/build': '#!/bin/bash\n',
+      'bin/worker': '#!/usr/bin/python3.12\n',
+      'bin/ui': '#!/usr/bin/env node\n',
+      'example.txt': '#!/bin/bash\n',
+      'example': '#!/bin/echo ruby\n',
+    });
+    const { output } = runScript(projectRoot);
+    for (const path of ['script/rails', 'git-hooks/pre-commit']) {
+      expect(byPath(output, path)).toMatchObject({ language: 'ruby', fileCategory: 'code' });
+    }
+    expect(byPath(output, 'script/build')).toMatchObject({ language: 'shell', fileCategory: 'script' });
+    expect(byPath(output, 'bin/worker').language).toBe('python');
+    expect(byPath(output, 'bin/ui').language).toBe('javascript');
+    expect(byPath(output, 'example.txt').fileCategory).toBe('docs');
+    expect(byPath(output, 'example').language).toBe('unknown');
+  });
+
   it('maps web markup (HTML, CSS) to their language ids', () => {
     projectRoot = setupTree({
       'a.html': '<!doctype html><html></html>\n',

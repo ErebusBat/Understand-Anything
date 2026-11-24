@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
+import { PluginRegistry } from "../plugins/registry.js";
 import { rubyConfig } from "../languages/configs/ruby.js";
 import { rubyCall, walkRuby } from "./ast.js";
 
@@ -7,6 +8,15 @@ let plugin: TreeSitterPlugin;
 beforeAll(async () => { plugin = new TreeSitterPlugin([rubyConfig]); await plugin.init(); });
 
 describe("Ruby grammar compatibility", () => {
+  it("analyzes an extensionless Ruby binstub using its real path and interpreter", () => {
+    const registry = new PluginRegistry();
+    registry.register(plugin);
+    const source = "#!/usr/bin/env ruby\ndef boot; end";
+    expect(registry.analyzeFileFull("bin/shop", source)?.structure.functions[0]?.name).toBe("boot");
+    expect(plugin.withSyntaxTree("bin/shop", source, root => root.type)).toBe("program");
+    expect(plugin.analyzeFileStrict("bin/shop", source)).toMatchObject({ status: "succeeded", language: "ruby" });
+  });
+
   it.each(["config.ru", "app.gemspec", "config/watch.god", "services/shop/Gemfile", "Rakefile", "Brewfile"])(
     "selects the Ruby grammar for %s", path => {
       expect(plugin.analyzeFileStrict(path, "def boot; end")).toMatchObject({
