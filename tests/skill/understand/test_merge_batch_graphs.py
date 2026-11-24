@@ -356,6 +356,8 @@ class RubyPairingTests(unittest.TestCase):
     def test_rails_and_gem_paths_preserve_namespaces_and_direction(self) -> None:
         pairs = [
             ("test/models/user_test.rb", "app/models/user.rb"),
+            ("test/helpers/user_helper_test.rb", "app/helpers/user_helper.rb"),
+            ("engines/shop/spec/helpers/menu/item_helper_spec.rb", "engines/shop/app/helpers/menu/item_helper.rb"),
             ("spec/models/admin/user_spec.rb", "app/models/admin/user.rb"),
             ("test/controllers/admin/users_controller_test.rb", "app/controllers/admin/users_controller.rb"),
             ("spec/services/billing/charge_spec.rb", "app/services/billing/charge.rb"),
@@ -386,7 +388,7 @@ class RubyPairingTests(unittest.TestCase):
     def test_excludes_helpers_shared_examples_and_broad_feature_tests(self) -> None:
         paths = [
             "test/test_helper.rb", "spec/spec_helper.rb", "spec/rails_helper.rb",
-            "spec/helper_spec.rb", "test/helpers/user_helper_test.rb",
+            "spec/helper_spec.rb", "test/helpers/support/mock_helper_test.rb",
             "spec/shared/user_spec.rb", "spec/shared_examples/user_spec.rb",
             "spec/shared_contexts/user_spec.rb", "spec/support/user_spec.rb",
             "spec/requests/user_spec.rb", "test/system/user_test.rb",

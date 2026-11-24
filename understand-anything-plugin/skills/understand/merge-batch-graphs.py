@@ -415,7 +415,7 @@ def _ruby_production_candidates(test_path: str) -> list[str]:
             break
     if base is None and stem.startswith("test_"):
         base = stem[len("test_"):]
-    if not base or base == "helper" or base.endswith("_helper"):
+    if not base or base == "helper":
         return []
 
     # The first test root establishes the project/engine boundary. Never
@@ -433,7 +433,11 @@ def _ruby_production_candidates(test_path: str) -> list[str]:
     # inside a production unit tree (controllers/api, services/request) are
     # real namespaces and must be retained for an exact path match.
     broad_suites = {"request", "requests", "system", "integration", "api", "features"}
-    if (tail and tail[0] in broad_suites) or any(part in excluded for part in tail):
+    if tail and tail[0] == "helpers" and base.endswith("_helper"):
+        if any(part in excluded for part in tail[1:]):
+            return []
+        return ["/".join([*prefix, "app", *tail, f"{base}.rb"])]
+    if base.endswith("_helper") or (tail and tail[0] in broad_suites) or any(part in excluded for part in tail):
         return []
     rails_units = {
         "models", "controllers", "services", "jobs", "mailers", "channels",

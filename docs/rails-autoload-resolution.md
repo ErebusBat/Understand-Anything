@@ -26,7 +26,7 @@ Direct `belongs_to`, `has_one`, `has_many`, and `has_and_belongs_to_many` associ
 
 Routes accept immediate literal HTTP declarations with `to: "controller#action"` and option-free `resources`/`resource` in the main application's `routes.draw` block. Both `Rails.application` and the statically declared application class can be the receiver. Literal `namespace` blocks qualify controller names, including when `path:` or `as:` changes the URL or route helpers. Singular resources pluralize the controller name. Other scopes, conditions, arbitrary blocks, mounts, drawn files, engine routes, and resource options produce diagnostics.
 
-Ruby test pairing recognizes exact Minitest/RSpec unit-test paths and gem `lib` conventions, preserving namespaces and engine prefixes. Both files must exist. The direction is production → test. Request, system, integration, shared-example, support, and helper paths are excluded; pairing is a naming heuristic, not proof of coverage.
+Ruby test pairing recognizes exact Minitest/RSpec unit-test paths, including `*_helper` units under `app/helpers`, and gem `lib` conventions, preserving namespaces and engine prefixes. Both files must exist. The direction is production → test. Request, system, integration, shared-example, and test-support paths are excluded; pairing is a naming heuristic, not proof of coverage.
 
 ## Incremental updates
 
