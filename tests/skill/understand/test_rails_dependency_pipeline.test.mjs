@@ -17,6 +17,91 @@ function run(command, args) {
 }
 
 describe('Rails dependencies through extraction, batching and deterministic merge', () => {
+  it.each(['', 'service/master/'])('resolves an application below the workspace root: %s', prefix => {
+    root = mkdtempSync(join(tmpdir(), 'ua-rails-workspace-'));
+    const sources = {
+      'config/application.rb': 'module Demo; class Application < Rails::Application; end; end',
+      'app/models/user.rb': 'class User; end',
+      'app/controllers/users_controller.rb': 'class UsersController; def show; User.find(1); end; end',
+    };
+    const files = Object.entries(sources).map(([localPath, source]) => {
+      const path = prefix + localPath;
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), source);
+      return { path, language: 'ruby', fileCategory: 'code' };
+    });
+    const input = join(root, 'input.json');
+    const output = join(root, 'output.json');
+    writeFileSync(input, JSON.stringify({ projectRoot: root, files }));
+    run(process.execPath, [join(scripts, 'extract-import-map.mjs'), input, output]);
+    const extraction = JSON.parse(readFileSync(output, 'utf-8'));
+    expect(extraction.failures).toEqual([]);
+    expect(extraction.dependencyMap[prefix + 'app/controllers/users_controller.rb']).toEqual([
+      expect.objectContaining({ target: prefix + 'app/models/user.rb', type: 'depends_on', kind: 'constant' }),
+    ]);
+  });
+
+  it('keeps nested application facts isolated through selective extraction and merge', () => {
+    root = mkdtempSync(join(tmpdir(), 'ua-rails-workspace-pipeline-'));
+    const sources = {};
+    for (const prefix of ['orders/master/', 'reports/', 'broken/']) {
+      Object.assign(sources, {
+        [prefix + 'config/application.rb']: 'module Demo; class Application < Rails::Application; end; end',
+        [prefix + 'app/models/user.rb']: 'class User; end',
+        [prefix + 'app/controllers/users_controller.rb']: "require_relative '../models/user'\nrequire 'shared/logger'\nclass UsersController; def show; User.find; end; end",
+        [prefix + 'lib/shared/logger.rb']: 'module Shared; module Logger; end; end',
+        [prefix + 'config/routes.rb']: 'Rails.application.routes.draw { resources :users }',
+      });
+    }
+    sources['broken/spec/broken_spec.rb'] = 'class Broken <';
+    sources['lib/shared/logger.rb'] = 'module Shared; module Logger; end; end';
+    const files = Object.entries(sources).map(([path, source]) => {
+      mkdirSync(dirname(join(root, path)), {recursive: true});
+      writeFileSync(join(root, path), source);
+      return {path, language: 'ruby', fileCategory: 'code'};
+    });
+    const input = join(root, 'input.json');
+    const output = join(root, 'output.json');
+    writeFileSync(input, JSON.stringify({projectRoot: root, files}));
+    run(process.execPath, [join(scripts, 'extract-import-map.mjs'), input, output]);
+    const full = JSON.parse(readFileSync(output, 'utf-8'));
+    expect(full.failures).toEqual([expect.objectContaining({path: 'broken/spec/broken_spec.rb'})]);
+    expect(full.dependencyMap['broken/app/controllers/users_controller.rb']).toEqual([]);
+    for (const prefix of ['orders/master/', 'reports/']) {
+      expect(full.importMap[prefix + 'app/controllers/users_controller.rb']).toEqual([
+        prefix + 'app/models/user.rb', prefix + 'lib/shared/logger.rb',
+      ]);
+      expect(full.dependencyMap[prefix + 'app/controllers/users_controller.rb']).toEqual([
+        expect.objectContaining({target: prefix + 'app/models/user.rb', kind: 'constant'}),
+      ]);
+      expect(full.dependencyMap[prefix + 'config/routes.rb']).toEqual([
+        expect.objectContaining({target: prefix + 'app/controllers/users_controller.rb', kind: 'route'}),
+      ]);
+    }
+    const consumer = 'orders/master/app/controllers/users_controller.rb';
+    writeFileSync(input, JSON.stringify({projectRoot: root, files: [...files].reverse(), analysisPaths: [consumer]}));
+    run(process.execPath, [join(scripts, 'extract-import-map.mjs'), input, output]);
+    const selective = JSON.parse(readFileSync(output, 'utf-8'));
+    expect(selective.dependencyMap).toEqual({[consumer]: full.dependencyMap[consumer]});
+    expect(selective.dependencyContexts).toEqual(full.dependencyContexts);
+
+    const intermediate = join(root, '.ua/intermediate');
+    mkdirSync(intermediate, {recursive: true});
+    writeFileSync(join(intermediate, 'scan-result.json'), JSON.stringify({files, ...full}));
+    writeFileSync(join(intermediate, 'batch-0.json'), JSON.stringify({
+      nodes: files.map(({path}) => ({id: `file:${path}`, type: 'file', name: path.split('/').at(-1), filePath: path})), edges: [],
+    }));
+    run(python.command, [...python.prefix, join(scripts, 'merge-batch-graphs.py'), root]);
+    const graph = JSON.parse(readFileSync(join(intermediate, 'assembled-graph.json'), 'utf-8'));
+    for (const prefix of ['orders/master/', 'reports/']) {
+      expect(graph.edges).toEqual(expect.arrayContaining([
+        expect.objectContaining({source: `file:${prefix}app/controllers/users_controller.rb`, target: `file:${prefix}app/models/user.rb`, type: 'depends_on'}),
+        expect.objectContaining({source: `file:${prefix}config/routes.rb`, target: `file:${prefix}app/controllers/users_controller.rb`, type: 'routes'}),
+      ]));
+    }
+    expect(graph.edges.every(e => e.source.split('/')[0] === e.target.split('/')[0])).toBe(true);
+  });
+
   it('recovers typed file edges and test pairings without inventing imports or action symbols', () => {
     root = mkdtempSync(join(tmpdir(), 'ua-rails-pipeline-'));
     const sources = {
@@ -50,7 +135,7 @@ describe('Rails dependencies through extraction, batching and deterministic merg
     const extractionText = readFileSync(output, 'utf-8');
     const extraction = JSON.parse(extractionText);
     expect(extraction.failures).toEqual([]);
-    expect(extraction.dependencyResolverVersion).toBe(1);
+    expect(extraction.dependencyResolverVersion).toBe(3);
     expect(extraction.importMap['app/services/check.rb']).toEqual(['lib/explicit.rb']);
     expect(extraction.importMap['app/models/partner.rb']).toEqual([]);
     const facts = extraction.dependencyMap['app/models/partner.rb'];

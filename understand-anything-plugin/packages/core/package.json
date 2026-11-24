@@ -43,6 +43,7 @@
   "dependencies": {
     "@tree-sitter-grammars/tree-sitter-kotlin": "1.1.0",
     "@understand-anything/tree-sitter-dart-wasm": "workspace:*",
+    "@understand-anything/tree-sitter-ruby-wasm": "workspace:*",
     "@understand-anything/tree-sitter-swift-wasm": "workspace:*",
     "fuse.js": "^7.1.0",
     "ignore": "^7.0.5",
@@ -53,7 +54,6 @@
     "tree-sitter-javascript": "^0.25.0",
     "tree-sitter-php": "^0.23.11",
     "tree-sitter-python": "^0.25.0",
-    "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "^0.24.0",
     "tree-sitter-scala": "^0.24.0",
     "tree-sitter-typescript": "^0.23.2",

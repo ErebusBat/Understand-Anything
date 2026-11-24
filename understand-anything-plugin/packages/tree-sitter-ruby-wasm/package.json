@@ -1,0 +1,15 @@
+{
+  "name": "@understand-anything/tree-sitter-ruby-wasm",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pinned Ruby grammar with append/heredoc and chained command-call compatibility fixes.",
+  "main": "tree-sitter-ruby.wasm",
+  "files": [
+    "tree-sitter-ruby.wasm",
+    "BUILD.md",
+    ".ruby-grammar-pin",
+    "compatibility.patch",
+    "LICENSE"
+  ],
+  "license": "MIT"
+}

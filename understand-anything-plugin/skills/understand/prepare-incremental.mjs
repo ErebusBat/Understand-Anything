@@ -482,6 +482,7 @@ function refreshDependencyData({ previousScan, currentScan, extraction, refreshP
   }
   return {
     dependencyMap,
+    dependencyContexts: contextRefreshed ? extraction?.dependencyContexts ?? [] : previousScan?.dependencyContexts ?? [],
     dependencyDiagnostics: [...diagnostics].sort(([a], [b]) => comparePaths(a, b)).map(([, value]) => value),
     dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
   };
@@ -750,7 +751,7 @@ async function main() {
     analysis.newFiles.length > 0
     || deletedFiles.length > 0
     || currentChangedPaths.some(isImportResolverConfig);
-  const importAnalysisPaths = importResolutionContextChanged
+  let importAnalysisPaths = importResolutionContextChanged
     ? currentInventory
     : sorted([...currentChangedPaths, ...missingImportEntries]);
   const dependencyRefresh = dependencyRefreshPaths({
@@ -765,6 +766,11 @@ async function main() {
     forceRefresh: decision.action === 'FULL_UPDATE'
       || Boolean(graph?.project?.gitCommitHash && graph.project.gitCommitHash !== baseCommit),
   });
+  // Ruby resolver upgrades can change which application's lib/ supplies an
+  // explicit require as well as its inferred constants. Refresh both maps.
+  if (dependencyRefresh.versionChanged) {
+    importAnalysisPaths = sorted([...importAnalysisPaths, ...dependencyRefresh.paths]);
+  }
   // SKIP finalization handles imports only. Typed facts must pass through the
   // deterministic merge, even when Ruby fingerprints report cosmetic changes
   // or the only change is an upgrade of the resolver on an unchanged commit.

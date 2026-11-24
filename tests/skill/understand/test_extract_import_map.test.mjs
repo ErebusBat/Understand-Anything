@@ -1355,7 +1355,7 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
       'app/helpers/auth.rb': [],
       'lib/shared/logger.rb': [],
     });
-    expect(result.output.dependencyResolverVersion).toBe(1);
+    expect(result.output.dependencyResolverVersion).toBe(3);
   });
 
   it('keeps explicit imports separate from typed Rails facts in full and selective scans', () => {
@@ -1383,7 +1383,7 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
       'README.md': [],
       'app/models/team.rb': full.output.dependencyMap['app/models/team.rb'],
     });
-    expect(selective.output.dependencyResolverVersion).toBe(1);
+    expect(selective.output.dependencyResolverVersion).toBe(3);
     expect(selective.output.dependencyDiagnostics).toEqual([]);
     expect(selective.output.importMap).toEqual({'app/models/team.rb':['app/models/person.rb'],'README.md':[]});
   });
@@ -1398,7 +1398,10 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
     const result = runScript(projectRoot,{projectRoot,files:Object.keys(source).map(path=>({path,language:'ruby',fileCategory:'code'}))});
     expect(result.status,result.stderr).toBe(0);
     expect(result.output.failures).toEqual([]);
-    expect(result.output.dependencyDiagnostics).toEqual([expect.objectContaining({code:'unsupported_autoload_config',path:'config/application.rb'})]);
+    expect(result.output.dependencyDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({code:'unsupported_autoload_config',path:'config/application.rb'}),
+      expect.objectContaining({code:'ruby-context-blocked',path:'config/application.rb'}),
+    ]));
     expect(result.output.dependencyMap['probe.rb']).toEqual([]);
     expect(result.output.importMap['probe.rb']).toEqual(['app/models/person.rb']);
   });
@@ -1415,7 +1418,9 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
       expect(result.output.importMap['consumer.rb']).toEqual([]);
       expect(result.output.dependencyMap['unsafe.rb']).toEqual([]);
       expect(result.output.failures).toEqual([expect.objectContaining({path:'unsafe.rb',stage:'ruby-file-read'})]);
-      expect(result.output.dependencyDiagnostics).toEqual([]);
+      expect(result.output.dependencyDiagnostics).toEqual([
+        expect.objectContaining({path:'config/application.rb',code:'ruby-context-blocked'}),
+      ]);
     } finally { rmSync(outside,{recursive:true,force:true}); }
   });
 });

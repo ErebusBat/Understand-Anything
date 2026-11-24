@@ -14,7 +14,6 @@ allowBuilds:
   tree-sitter-javascript: true
   tree-sitter-php: true
   tree-sitter-python: true
-  tree-sitter-ruby: true
   tree-sitter-rust: true
   tree-sitter-scala: true
   tree-sitter-typescript: true

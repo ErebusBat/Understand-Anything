@@ -133,4 +133,5 @@ export * from "./ruby/types.js";
 export * from "./ruby/ast.js";
 export * from "./ruby/inflections.js";
 export * from "./ruby/resolver.js";
+export * from "./ruby/workspace-resolver.js";
 export { extractRailsRouteDependencies } from "./ruby/rails-routes.js";

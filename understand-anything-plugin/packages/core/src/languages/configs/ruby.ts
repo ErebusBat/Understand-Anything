@@ -5,7 +5,7 @@ export const rubyConfig = {
   displayName: "Ruby",
   extensions: [".rb", ".rake"],
   treeSitter: {
-    wasmPackage: "tree-sitter-ruby",
+    wasmPackage: "@understand-anything/tree-sitter-ruby-wasm",
     wasmFile: "tree-sitter-ruby.wasm",
   },
   concepts: [

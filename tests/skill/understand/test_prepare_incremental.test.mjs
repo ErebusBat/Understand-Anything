@@ -256,7 +256,7 @@ describe('typed dependency incremental contracts', () => {
   const fact = { target: 'app/models/person.rb', type: 'depends_on', kind: 'constant', reference: 'Person', line: 3 };
   const baseline = () => ({
     files,
-    dependencyResolverVersion: 1,
+    dependencyResolverVersion: 3,
     dependencyMap: { 'app/models/person.rb': [], 'app/services/report.rb': [fact], 'src/extra.js': [] },
   });
 
@@ -289,7 +289,7 @@ describe('typed dependency incremental contracts', () => {
       { path: null, code: 'old_context', message: 'Old context' },
     ];
     const diagnostic = { path: 'app/services/report.rb', code: 'unsupported_dynamic', message: 'Unsupported reference', line: 4 };
-    const extraction = { dependencyMap: { 'app/services/report.rb': [] }, dependencyResolverVersion: 1,
+    const extraction = { dependencyMap: { 'app/services/report.rb': [] }, dependencyResolverVersion: 3,
       dependencyDiagnostics: [diagnostic, diagnostic, { path: null, code: 'context', message: 'Current context' }] };
     const input = { previousScan, currentScan: { files }, extraction, refreshPaths: ['app/services/report.rb'] };
     const result = refreshDependencyData(input);
@@ -299,13 +299,13 @@ describe('typed dependency incremental contracts', () => {
       diagnostic, previousScan.dependencyDiagnostics[1], extraction.dependencyDiagnostics[2],
     ]));
     expect(result.dependencyDiagnostics).toHaveLength(3);
-    expect(result.dependencyResolverVersion).toBe(1);
+    expect(result.dependencyResolverVersion).toBe(3);
     expect(refreshDependencyData(input)).toEqual(result);
     expect(previousScan.dependencyMap['app/services/report.rb']).toEqual([fact]);
   });
 
   it('normalizes fact order, deduplicates evidence, and rejects invalid or outside-inventory endpoints', () => {
-    const extraction = { dependencyResolverVersion: 1, dependencyDiagnostics: [], dependencyMap: {
+    const extraction = { dependencyResolverVersion: 3, dependencyDiagnostics: [], dependencyMap: {
       'app/services/report.rb': [fact, { ...fact, kind: 'association', line: 2 }, fact,
         { ...fact, target: '../escape.rb' }, { ...fact, target: 'missing.rb' },
         { ...fact, target: 'app/services/report.rb' }, { ...fact, type: 'imports' }],
@@ -319,7 +319,7 @@ describe('typed dependency incremental contracts', () => {
 
   it('keeps global diagnostics when empty analysisPaths skips extraction context', () => {
     const previousScan = { ...baseline(), dependencyDiagnostics: [{ path: null, code: 'unsupported_context', message: 'Unchanged context' }] };
-    const extraction = { dependencyMap: {}, dependencyDiagnostics: [], dependencyResolverVersion: 1 };
+    const extraction = { dependencyMap: {}, dependencyDiagnostics: [], dependencyResolverVersion: 3 };
     expect(refreshDependencyData({ previousScan, currentScan: { files }, extraction, refreshPaths: [] })
       .dependencyDiagnostics).toEqual(previousScan.dependencyDiagnostics);
     expect(refreshDependencyData({ previousScan, currentScan: { files: [] }, extraction, refreshPaths: [] })
@@ -328,7 +328,7 @@ describe('typed dependency incremental contracts', () => {
 
   it.each([
     [{ dependencyResolverVersion: 0, dependencyMap: {} }, /resolver version/],
-    [{ dependencyResolverVersion: 1, dependencyMap: {} }, /omitted refreshed source/],
+    [{ dependencyResolverVersion: 3, dependencyMap: {} }, /omitted refreshed source/],
   ])('fails closed on an incompatible or incomplete extractor contract', (extraction, message) => {
     expect(() => refreshDependencyData({ previousScan: baseline(), currentScan: { files }, extraction,
       refreshPaths: ['app/services/report.rb'] })).toThrow(message);
@@ -478,7 +478,27 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     }));
   });
 
-  it.each([undefined, 0, 2])('migrates resolver version %s on an unchanged baseline, repeatably', version => {
+  it('refreshes application-scoped requires when upgrading the workspace resolver', () => {
+    const consumer = 'service/master/app/services/report.rb';
+    const f = setupRepository({
+      'service/master/config/application.rb': 'module Demo; class Application < Rails::Application; end; end',
+      [consumer]: "require 'shared/logger'\nclass Report; end",
+      'service/master/lib/shared/logger.rb': 'module Shared; module Logger; end; end',
+      'lib/shared/logger.rb': 'module Shared; module Logger; end; end',
+    });
+    const scanPath = join(f.root, '.ua/intermediate/scan-result.json');
+    const baseline = JSON.parse(readFileSync(scanPath, 'utf-8'));
+    baseline.dependencyResolverVersion = 1;
+    baseline.importMap[consumer] = ['lib/shared/logger.rb'];
+    writeFileSync(scanPath, JSON.stringify(baseline));
+    const result = prepare(f.root, f.baseCommit);
+    expect(result.plan.filesToReanalyze).toEqual([]);
+    expect(result.plan.importMapRefreshPaths).toContain(consumer);
+    expect(result.scan.importMap[consumer]).toEqual(['service/master/lib/shared/logger.rb']);
+    expect(result.scan.dependencyContexts).toContainEqual({root: 'service/master', isRails: true, blocked: false});
+  });
+
+  it.each([undefined, 0, 1, 2, 4])('migrates resolver version %s on an unchanged baseline, repeatably', version => {
     const f = railsFixture();
     const baseline = f.read('scan-result.json');
     baseline.dependencyResolverVersion = version;
@@ -491,7 +511,7 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     expect(first.plan.action).toBe('PARTIAL_UPDATE');
     expect(first.plan.filesToReanalyze).toEqual([]);
     expect(first.plan.dependencyResolverVersionChanged).toBe(true);
-    expect(first.scan.dependencyResolverVersion).toBe(1);
+    expect(first.scan.dependencyResolverVersion).toBe(3);
     expect(targets(first.scan)).toContain(target);
     expect(first.scan.dependencyDiagnostics).not.toContainEqual(baseline.dependencyDiagnostics[0]);
     expect(second.plan).toEqual(first.plan);
@@ -509,7 +529,7 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     commit(f.root, 'generated output', { forcePaths: ['.ua/generated.json'] });
     const result = prepare(f.root, f.baseCommit);
     expect(result.plan.action).toBe('PARTIAL_UPDATE');
-    expect(result.scan.dependencyResolverVersion).toBe(1);
+    expect(result.scan.dependencyResolverVersion).toBe(3);
     expect(f.read('batch-existing.json').nodes).not.toHaveLength(0);
   });
 

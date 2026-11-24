@@ -35,7 +35,8 @@
  *     importMap: { <path>: [<resolvedPath>, ...], ... },
  *     dependencyMap: { <path>: [{ target, type, kind, reference?, line? }, ...] },
  *     dependencyDiagnostics: [{ path, code, message, line? }, ...],
- *     dependencyResolverVersion: 1
+ *     dependencyContexts: [{ root, isRails, blocked }, ...],
+ *     dependencyResolverVersion: 2
  *   }
  *
  * Logging: stderr only (stdout reserved for piped tools).
@@ -93,8 +94,7 @@ try {
 
 const {
   TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers,
-  createRubyDependencyResolver, RUBY_DEPENDENCY_RESOLVER_VERSION,
-  extractRailsRouteDependencies,
+  createRubyWorkspaceDependencyResolver, RUBY_DEPENDENCY_RESOLVER_VERSION,
 } = core;
 
 // ---------------------------------------------------------------------------
@@ -1516,7 +1516,8 @@ function parseRubyImports(content) {
  * Resolve a single Ruby require. Returns array (0 or 1 match).
  *
  * For require_relative: append `.rb` if missing, resolve against importer dir.
- * For require: probe lib/<src>.rb, app/<src>.rb, <src>.rb.
+ * For require: probe lib/<src>.rb, app/<src>.rb, <src>.rb within the owning
+ * application. Never fall back to an unrelated workspace-level library.
  */
 export function resolveRubyImport({ kind, source }, file, ctx) {
   if (!source) return [];
@@ -1529,7 +1530,8 @@ export function resolveRubyImport({ kind, source }, file, ctx) {
   }
 
   // Load-path probe order
-  const probes = [`lib/${withExt}`, `app/${withExt}`, withExt];
+  const prefix = ctx.rubyRootPrefix ?? '';
+  const probes = [`${prefix}lib/${withExt}`, `${prefix}app/${withExt}`, `${prefix}${withExt}`];
   for (const p of probes) {
     if (ctx.fileSet.has(p)) return [p];
   }
@@ -1999,6 +2001,7 @@ async function main() {
       failures: [],
       importMap: {},
       dependencyMap: {},
+      dependencyContexts: [],
       dependencyDiagnostics: [],
       dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
     };
@@ -2048,7 +2051,7 @@ async function main() {
   // Ruby constants depend on declarations/configuration in unchanged files.
   // Build from the complete inventory even when analysisPaths is selective.
   const rubyResolver = treeSitterReady
-    ? createRubyDependencyResolver({ projectRoot, files, plugin: tsPlugin })
+    ? createRubyWorkspaceDependencyResolver({ projectRoot, files, plugin: tsPlugin })
     : null;
   if (rubyResolver) failures.push(...rubyResolver.failures);
   const dependencyMap = {};
@@ -2057,18 +2060,7 @@ async function main() {
     dependencyMap[path] = file.fileCategory === 'code' && path.endsWith('.rb')
       ? rubyResolver?.getDependencies(path) ?? []
       : [];
-    if (rubyResolver?.isRails && /(^|\/)config\/routes\.rb$/.test(path) && rubyResolver.sources.has(path)) {
-      const routes = extractRailsRouteDependencies({
-        path, source: rubyResolver.sources.get(path), plugin: tsPlugin, resolver: rubyResolver,
-      });
-      dependencyMap[path] = [...dependencyMap[path], ...routes.dependencies].sort((a, b) =>
-        comparePaths(a.target, b.target) || comparePaths(a.type, b.type)
-        || comparePaths(a.kind, b.kind) || comparePaths(a.reference ?? '', b.reference ?? '')
-        || (a.line ?? 0) - (b.line ?? 0));
-      rubyResolver.diagnostics.push(...routes.diagnostics);
-    }
   }
-  rubyResolver?.sortDiagnostics();
 
   const importMap = {};
   let filesWithImports = 0;
@@ -2127,8 +2119,9 @@ async function main() {
       // resolver needs the regex-parsed shape directly. All other tree-sitter
       // languages get analyzed once and dispatched normally.
       if (file.language === 'ruby') {
+        const rubyContext = { ...ctx, rubyRootPrefix: rubyResolver?.rootPrefixFor(path) ?? '' };
         for (const imp of parseRubyImports(content)) {
-          for (const out of resolveRubyImport(imp, file, ctx)) {
+          for (const out of resolveRubyImport(imp, file, rubyContext)) {
             if (out && ctx.fileSet.has(out) && (!out.endsWith('.rb') || rubyResolver?.sources.has(out))) resolvedSet.add(out);
           }
         }
@@ -2186,6 +2179,7 @@ async function main() {
     failures,
     importMap,
     dependencyMap,
+    dependencyContexts: rubyResolver?.contexts ?? [],
     dependencyDiagnostics: rubyResolver?.diagnostics ?? [],
     dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
   };

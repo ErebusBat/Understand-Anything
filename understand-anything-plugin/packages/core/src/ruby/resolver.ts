@@ -100,6 +100,7 @@ export class RubyDependencyResolver {
     this.configuration = initialRubyConfiguration(paths, this.isRails);
     if (!this.isRails) return;
     const engineConfigPrefixes = new Set<string>();
+    const engineRoots = new Map<string, string>();
     for (const [path, detected] of trees) if (detected.engines) {
       const match = path.match(/^(.*?)lib\/(?:[^/]+\/)*engine\.rb$/);
       if (!match) {
@@ -107,6 +108,7 @@ export class RubyDependencyResolver {
         this.configuration.unsafe = true;
       } else {
         const prefix = match[1];
+        engineRoots.set(path, prefix.replace(/\/$/, ""));
         engineConfigPrefixes.add(`${prefix}config/`);
         for (const root of initialRubyConfiguration(paths.filter(p => p.startsWith(prefix)).map(p => p.slice(prefix.length)), true).roots) {
           this.configuration.roots.push({...root, path: prefix + root.path, provenance: path});
@@ -116,7 +118,9 @@ export class RubyDependencyResolver {
     for (const [path, source] of this.sources) {
       if (path.startsWith("config/") || [...engineConfigPrefixes].some(prefix => path.startsWith(prefix)) || trees.get(path)?.engines) {
         this.configurationPaths.add(path);
-        plugin.withSyntaxTree(path, source, root => readRubyConfiguration(path, root, this.configuration, this.diagnostics));
+        plugin.withSyntaxTree(path, source, root => readRubyConfiguration(path, root, this.configuration, this.diagnostics, {
+          projectRoot, applicationRootKnown:[...trees.values()].some(t => t.application), engineRoot:engineRoots.get(path),
+        }));
       }
     }
     // A failed parse/read can hide an alias, root override, or duplicate. Never
@@ -288,7 +292,11 @@ export class RubyDependencyResolver {
       this.addDiagnostic({path:null, code:"ambiguous_autoload_root", message:`Multiple roots map ${name}: ${paths.sort(compare).join(", ")}; loader precedence is unknown`});
     }
     for (const [name, definitions] of this.declarations) {
-      if (definitions.filter(d => d.kind !== "assignment").length > 1) {
+      // Reopening a module adds to the same namespace; it does not replace its
+      // identity. Keep every declaration for mixin/ancestor checks, and keep
+      // root collisions, assignments, conditionals and class conflicts blocked.
+      const namespaceReopenings = definitions.every(d => d.kind === "module" && !d.conditional);
+      if (!namespaceReopenings && definitions.filter(d => d.kind !== "assignment").length > 1) {
         this.blocked.add(name);
         this.addDiagnostic({path: null, code: "ambiguous_constant", message: `Multiple declarations of ${name}: ${definitions.map(d => `${d.path}:${d.line}`).sort(compare).join(", ")}`});
       }

@@ -15,7 +15,7 @@ beforeAll(async () => {
   Language = mod.Language;
   await Parser.init();
   const wasmPath = require.resolve(
-    "tree-sitter-ruby/tree-sitter-ruby.wasm",
+    "@understand-anything/tree-sitter-ruby-wasm/tree-sitter-ruby.wasm",
   );
   rubyLang = await Language.load(wasmPath);
 });

@@ -1,0 +1,23 @@
+--- a/grammar.js
++++ b/grammar.js
+@@ -776,6 +776,7 @@
+     call: $ => {
+       const receiver = choice(
+         $._call,
++        $._chained_command_call,
+         field('method', choice(
+           $._variable, $._function_identifier,
+         )),
+--- a/src/scanner.c
++++ b/src/scanner.c
+@@ -1046,6 +1046,10 @@
+         literal.nesting_depth = 1;
+ 
+         if (lexer->lookahead == '<') {
++            // With a completed left operand and no separating whitespace, <<
++            // is a shift/append operator, not a command's heredoc argument.
++            if (!valid_symbols[HEREDOC_START] ||
++                (valid_symbols[BINARY_STAR] && !scanner->has_leading_whitespace)) return false;
+             advance(lexer);
+             if (lexer->lookahead != '<') {
+                 return false;
