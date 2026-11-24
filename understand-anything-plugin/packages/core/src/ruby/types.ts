@@ -1,4 +1,4 @@
-export const RUBY_DEPENDENCY_RESOLVER_VERSION = 3;
+export const RUBY_DEPENDENCY_RESOLVER_VERSION = 4;
 
 /** File-to-file evidence, kept separate from explicit require/import edges. */
 export interface DependencyFact {

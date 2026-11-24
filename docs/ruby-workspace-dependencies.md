@@ -1,6 +1,6 @@
 # Ruby dependencies in workspaces
 
-Resolver version 3 resolves nested Rails applications independently. An inventory
+The resolver handles nested Rails applications independently. An inventory
 path such as `service/master/app/models/user.rb` stays workspace-relative in
 the graph, while its application uses `service/master` as its resolution root.
 
