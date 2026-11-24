@@ -28,7 +28,7 @@ export class RubyWorkspaceDependencyResolver {
   private readonly prefixes: string[];
 
   constructor(private readonly options: { projectRoot: string; files: RubyInventoryFile[]; plugin: TreeSitterPlugin }) {
-    const files = [...new Map(options.files.filter(f => f.path.endsWith(".rb")).map(f => [f.path, f])).values()]
+    const files = [...new Map(options.files.filter(f => f.path.endsWith(".rb") || f.language === "ruby").map(f => [f.path, f])).values()]
       .sort((a, b) => compare(a.path, b.path));
     const applications = new Set<string>();
     for (const {path} of files) {
@@ -74,7 +74,7 @@ export class RubyWorkspaceDependencyResolver {
       for (const {path} of inventory) this.owners.set(prefix + path, context);
       for (const [path, source] of resolver.sources) this.sources.set(prefix + path, source);
       this.failures.push(...resolver.failures.map(failure => ({...failure, path: failure.path === null ? null : prefix + failure.path})));
-      if (resolver.isRails && (resolver.configuration.unsafe || resolver.failures.length)) {
+      if (resolver.isRails && resolver.inferenceBlocked) {
         this.contextDiagnostics.push({
           path: inventory.some(file => file.path === "config/application.rb") ? prefix + "config/application.rb" : null,
           code: "ruby-context-blocked",
@@ -88,7 +88,7 @@ export class RubyWorkspaceDependencyResolver {
   get contexts(): { root: string; isRails: boolean; blocked: boolean }[] {
     return this.projects.map(({prefix, resolver}) => ({
       root: prefix.slice(0, -1) || ".", isRails: resolver.isRails,
-      blocked: resolver.configuration.unsafe || resolver.failures.length > 0,
+      blocked: resolver.inferenceBlocked,
     }));
   }
 

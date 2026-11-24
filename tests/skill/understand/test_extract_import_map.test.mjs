@@ -1378,6 +1378,29 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
     expect(result.output.importMap['shop/app/models/user.rb']).toEqual([]);
   });
 
+  it('extracts Ruby tasks and binstubs as consumers without indexing them as autoload providers', () => {
+    const source = {
+      'config/application.rb': 'module Demo; class Application < Rails::Application; end; end',
+      'app/models/source.rb': 'class Source; end',
+      'app/models/extra.rake': 'class Extra; end',
+      'lib/tasks/report.rake': 'require_relative "../../app/models/source"\ntask :report do\n Source.run; Extra.run\nend',
+      'bin/report': '#!/usr/bin/env ruby\nSource.run',
+      'lib/tasks/broken.rake': 'task :broken do',
+    };
+    projectRoot = setupTree(source);
+    const files = Object.keys(source).map(path => ({path, language: 'ruby', fileCategory: 'code'}));
+    const result = runScript(projectRoot, {projectRoot, files});
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output.failures).toEqual([
+      expect.objectContaining({path: 'lib/tasks/broken.rake', stage: 'ruby-file-parse'}),
+    ]);
+    expect(result.output.dependencyContexts).toEqual([{root: '.', isRails: true, blocked: false}]);
+    for (const path of ['lib/tasks/report.rake', 'bin/report']) {
+      expect(result.output.dependencyMap[path]).toEqual([expect.objectContaining({target: 'app/models/source.rb'})]);
+    }
+    expect(result.output.importMap['lib/tasks/report.rake']).toEqual(['app/models/source.rb']);
+  });
+
   it('keeps explicit imports separate from typed Rails facts in full and selective scans', () => {
     const source = {
       'config/application.rb': 'module Demo; class Application < Rails::Application; end; end',

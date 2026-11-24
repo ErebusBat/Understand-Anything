@@ -2065,7 +2065,7 @@ async function main() {
   const dependencyMap = {};
   for (const file of [...analysisFiles].sort((a, b) => comparePaths(a.path, b.path))) {
     const path = toPosix(file.path);
-    dependencyMap[path] = file.fileCategory === 'code' && path.endsWith('.rb')
+    dependencyMap[path] = file.language === 'ruby' || (file.fileCategory === 'code' && path.endsWith('.rb'))
       ? rubyResolver?.getDependencies(path) ?? []
       : [];
   }
@@ -2078,7 +2078,7 @@ async function main() {
     const path = toPosix(file.path);
 
     // Non-code files always get an empty array
-    if (file.fileCategory !== 'code') {
+    if (file.fileCategory !== 'code' && file.language !== 'ruby') {
       importMap[path] = [];
       continue;
     }
@@ -2098,7 +2098,7 @@ async function main() {
     try {
       // The Ruby resolver validated both inventory-relative spelling and the
       // real symlink target. Never bypass a rejected/failed read here.
-      if (path.endsWith('.rb') && rubyResolver) {
+      if ((path.endsWith('.rb') || file.language === 'ruby') && rubyResolver) {
         content = rubyResolver.sources.get(path);
         if (content === undefined) {
           importMap[path] = [];
