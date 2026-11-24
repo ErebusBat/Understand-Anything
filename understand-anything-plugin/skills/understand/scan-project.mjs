@@ -509,7 +509,7 @@ function enumerateViaGit(projectRoot) {
     encoding: 'utf-8',
     maxBuffer: 256 * 1024 * 1024, // 256MB — huge monorepos can produce >10MB of paths
   });
-  if (result.status !== 0 || !result.stdout) return null;
+  if (result.status !== 0) return null;
   // Each NUL-separated chunk is one path, project-relative, already POSIX on
   // all platforms because git emits forward slashes regardless of OS.
   return result.stdout

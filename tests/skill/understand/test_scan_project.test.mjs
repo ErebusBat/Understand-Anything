@@ -774,6 +774,14 @@ describe('scan-project.mjs — empty repo', () => {
     expect(r.output.filteredByIgnore).toBe(0);
     expect(r.output.estimatedComplexity).toBe('small');
   });
+
+  it('respects a successful empty Git listing in a subtree containing only ignored files', () => {
+    projectRoot = setupTree({ '.gitignore': 'scratch/\n', 'scratch/local.txt': 'local only\n' });
+    const r = runScript(join(projectRoot, 'scratch'));
+    expect(r.status).toBe(0);
+    expect(r.output.files).toEqual([]);
+    expect(r.stderr).not.toContain('falling back to recursive walk');
+  });
 });
 
 describe('scan-project.mjs — per-file failure resilience', () => {
