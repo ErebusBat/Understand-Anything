@@ -450,7 +450,7 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics.some(d => d.code === "ambiguous_constant" && d.message.startsWith("Multiple declarations of Blog:"))).toBe(false);
   });
 
-  it.each(["class Blog; end", "Blog = Object", "module Blog; end if enabled?"])("keeps conflicting namespace declarations blocked: %s", source => {
+  it.each(["class Blog; end", "Blog = Object", "Blog = Object if enabled?"])("keeps conflicting namespace declarations blocked: %s", source => {
     const {resolver} = setup({
       "app/models/blog.rb":"module Blog; end",
       "app/models/reopen.rb":source,
