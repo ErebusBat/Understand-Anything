@@ -295,10 +295,6 @@ export class RubyDependencyResolver {
         const list = this.declarations.get(declaration.name) ?? [];
         list.push(declaration);
         this.declarations.set(declaration.name, list);
-        if (declaration.kind === "assignment" || declaration.conditional) {
-          this.blocked.add(declaration.name);
-          this.addDiagnostic({path, code: declaration.kind === "assignment" ? "unsupported_constant_assignment" : "unsupported_conditional_declaration", line: declaration.line, message: `Constant ${declaration.name} may shadow or replace a declaration`});
-        }
         // Loading the expected constant also defines its nested constants.
         // An unrelated sibling declaration is not independently autoloadable
         // merely because it happens to share that source file.
@@ -321,10 +317,15 @@ export class RubyDependencyResolver {
       this.addDiagnostic({path:null, code:"ambiguous_autoload_root", message:`Multiple roots map ${name}: ${paths.sort(compare).join(", ")}; loader precedence is unknown`});
     }
     for (const [name, definitions] of this.declarations) {
-      // Reopening a module adds to the same namespace; it does not replace its
-      // identity. Keep every declaration for mixin/ancestor checks, and keep
-      // root collisions, assignments, conditionals and class conflicts blocked.
-      const namespaceReopenings = definitions.every(d => d.kind === "module" && !d.conditional);
+      // Once a module exists unconditionally, an optional reopening cannot
+      // replace it. Its children retain their own conditional/shadowing checks.
+      const namespaceReopenings = definitions.every(d => d.kind === "module") && definitions.some(d => !d.conditional);
+      for (const def of definitions) {
+        if (def.kind === "assignment" || (def.conditional && !namespaceReopenings)) {
+          this.blocked.add(name);
+          this.addDiagnostic({path: def.path, code: def.kind === "assignment" ? "unsupported_constant_assignment" : "unsupported_conditional_declaration", line: def.line, message: `Constant ${name} may shadow or replace a declaration`});
+        }
+      }
       if (!namespaceReopenings && definitions.filter(d => d.kind !== "assignment").length > 1) {
         this.blocked.add(name);
         this.addDiagnostic({path: null, code: "ambiguous_constant", message: `Multiple declarations of ${name}: ${definitions.map(d => `${d.path}:${d.line}`).sort(compare).join(", ")}`});

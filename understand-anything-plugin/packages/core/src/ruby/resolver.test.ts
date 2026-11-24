@@ -512,6 +512,20 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics).toContainEqual(expect.objectContaining({path:"engines/blog/config/initializers/shadow.rb",code:"unsupported_constant_assignment"}));
   });
 
+  it("keeps model associations across conditional reopenings of an established framework module", () => {
+    const {resolver} = setup({
+      "config/initializers/adapter.rb": `module ActiveRecord; class Base; end; end
+        if enabled?
+          module ActiveRecord; class Optional; end; end
+        end`,
+      "app/models/user.rb": "class User < ActiveRecord::Base; end",
+      "app/models/account.rb": "class Account < ActiveRecord::Base; belongs_to :user; end",
+    });
+    expect(targets(resolver, "app/models/account.rb", "association")).toEqual(["app/models/user.rb"]);
+    expect(resolver.diagnostics.filter(d => d.code === "unsupported_conditional_declaration").map(d => d.message))
+      .toEqual(["Constant ActiveRecord::Optional may shadow or replace a declaration"]);
+  });
+
   it("honors initializer constant shadowing on a framework ancestor before allowlisting it", () => {
     const {resolver} = setup({
       "config/initializers/shadow.rb":"class ActiveRecord::Base; User = Struct.new(:id); end",
