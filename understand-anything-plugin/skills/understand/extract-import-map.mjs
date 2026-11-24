@@ -95,6 +95,7 @@ try {
 const {
   TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers,
   createRubyWorkspaceDependencyResolver, RUBY_DEPENDENCY_RESOLVER_VERSION,
+  rubyCall, rubyConstant, rubyLiteral, walkRuby,
 } = core;
 
 // ---------------------------------------------------------------------------
@@ -1472,44 +1473,24 @@ export function resolveSwiftImport(rawImport, file, ctx) {
 //                                  app/foo/bar.rb, or foo/bar.rb (whichever
 //                                  exists)
 //
-// Tree-sitter's Ruby extractor uses a single `imports` field for both forms
-// and drops the method name, so we cannot tell them apart from the
-// extractor output alone. Instead we use a regex pass on the file content,
-// which preserves the method name as the discriminator.
-//
-// The two forms are unambiguous in source — both start with the method name
-// followed by a quoted argument — so a focused regex is reliable.
-// ---------------------------------------------------------------------------
-
-const RUBY_REQUIRE_RE =
-  /\b(require_relative|require)\s*\(?\s*(['"])([^'"`\n]+?)\2/g;
-
-/**
- * Strip Ruby line comments (`# ...` to end of line) before running the
- * require regex. Ruby has no block comments at this scope (=begin/=end
- * exists but is rare; tree-sitter would normally handle that). Like the JS
- * stripper, this doesn't try to honor string contents — it's a heuristic.
- */
-function stripRubyComments(content) {
-  return content.replace(/#[^\n]*/g, '');
-}
-
-/**
- * Return [{ kind: 'relative'|'absolute', source }] for every require /
- * require_relative call in a Ruby file.
- */
-function parseRubyImports(content) {
-  const out = [];
-  let m;
-  const stripped = stripRubyComments(content);
-  RUBY_REQUIRE_RE.lastIndex = 0;
-  while ((m = RUBY_REQUIRE_RE.exec(stripped)) !== null) {
-    out.push({
-      kind: m[1] === 'require_relative' ? 'relative' : 'absolute',
-      source: m[3],
+// The general structure extractor drops the distinction between require and
+// require_relative. Inspect the actual call and its literal argument here.
+function parseRubyImports(plugin, path, content) {
+  if (!content.includes('require')) return [];
+  return plugin.withSyntaxTree(path, content, root => {
+    const imports = [];
+    walkRuby(root, node => {
+      const call = rubyCall(node);
+      if (!call || (call.method !== 'require' && call.method !== 'require_relative')
+        || call.block || call.args.length !== 1 || call.args[0].type !== 'string') return;
+      if (call.receiver && rubyConstant(call.receiver)?.replace(/^::/, '') !== 'Kernel') return;
+      const source = rubyLiteral(call.args[0]);
+      if (typeof source === 'string' && source.length) {
+        imports.push({ kind: call.method === 'require_relative' ? 'relative' : 'absolute', source });
+      }
     });
-  }
-  return out;
+    return imports;
+  });
 }
 
 /**
@@ -1520,7 +1501,7 @@ function parseRubyImports(content) {
  * application. Never fall back to an unrelated workspace-level library.
  */
 export function resolveRubyImport({ kind, source }, file, ctx) {
-  if (!source) return [];
+  if (!source || source.startsWith('/') || /^[a-z]:/i.test(source) || source.includes('\\')) return [];
   const importerDir = dirOf(toPosix(file.path));
   const withExt = source.endsWith('.rb') ? source : source + '.rb';
 
@@ -2124,11 +2105,11 @@ async function main() {
 
       // Ruby is the only language whose tree-sitter import field doesn't
       // preserve the require vs require_relative discriminator, so the
-      // resolver needs the regex-parsed shape directly. All other tree-sitter
+      // resolver reads those calls directly from the Ruby AST. All other tree-sitter
       // languages get analyzed once and dispatched normally.
       if (file.language === 'ruby') {
         const rubyContext = { ...ctx, rubyRootPrefix: rubyResolver?.rootPrefixFor(path) ?? '' };
-        for (const imp of parseRubyImports(content)) {
+        for (const imp of parseRubyImports(tsPlugin, path, content)) {
           for (const out of resolveRubyImport(imp, file, rubyContext)) {
             if (out && ctx.fileSet.has(out) && (!out.endsWith('.rb') || rubyResolver?.sources.has(out))) resolvedSet.add(out);
           }

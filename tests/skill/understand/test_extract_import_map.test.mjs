@@ -1358,6 +1358,33 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
     expect(result.output.dependencyResolverVersion).toBe(3);
   });
 
+  it('reads literal Ruby calls without matching strings, heredocs or unrelated receivers', () => {
+    const source = {
+      'app.rb': [
+        '# require "fake"',
+        'body = <<~TEXT',
+        'require "fake"',
+        'TEXT',
+        `puts "require 'fake'"`,
+        'Loader.require("fake")',
+        'require_relative("/fake")',
+        'require("real" + suffix)',
+        'require("#{name}")',
+        'mark("#"); ::Kernel.require(%q(real))',
+        'def run; require_relative "later"; end',
+      ].join('\n'),
+      'fake.rb': '',
+      'lib/real.rb': '',
+      'later.rb': '',
+    };
+    projectRoot = setupTree(source);
+    const files = Object.keys(source).map(path => ({path, language: 'ruby', fileCategory: 'code'}));
+    const result = runScript(projectRoot, {projectRoot, files});
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output.failures).toEqual([]);
+    expect(result.output.importMap['app.rb']).toEqual(['later.rb', 'lib/real.rb']);
+  });
+
   it('resolves explicit RSpec helper requires inside the owning suite when unambiguous', () => {
     const sources = {
       'shop/config/application.rb': 'class Shop < Rails::Application; end',
