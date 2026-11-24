@@ -181,7 +181,11 @@ export class RubyDependencyResolver {
         if (raw) {
           const name = raw.startsWith("::") ? raw.slice(2) : nesting[0] ? `${nesting[0]}::${raw}` : raw;
           result.declarations.push({name, kind: "assignment", path, line: node.startPosition.row + 1, nesting: [...nesting], mixins: [], conditional});
-          return; // Aliases and dynamically created classes are not references.
+          // The left side introduces a binding. Its initializer still reads
+          // constants, even when the assigned name cannot be resolved later.
+          const value = node.childForFieldName("right");
+          if (value) visit(value, nesting, owner, inMethod, conditional);
+          return;
         }
       }
       const call = rubyCall(node);

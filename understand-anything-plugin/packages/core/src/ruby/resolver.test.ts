@@ -124,6 +124,24 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics.map(d=>d.code)).toContain("unsupported_conditional_declaration");
   });
 
+  it("extracts constant reads from initializers without turning assigned aliases into autoload targets", () => {
+    const {resolver} = setup({
+      "app/models/user.rb": "class User; end",
+      "app/services/team/helper.rb": "module Team; class Helper; end; end",
+      "app/services/team/probe.rb": `module Team; class Probe
+        ALIAS = ::User
+        DEFAULTS ||= [Helper.new, "User"]
+        ALIAS.new
+      end; end`,
+      "other.rb": "Team::Probe::ALIAS.new",
+    });
+    expect(resolver.getDependencies("app/services/team/probe.rb")).toEqual([
+      expect.objectContaining({target: "app/models/user.rb", reference: "::User", line: 2}),
+      expect.objectContaining({target: "app/services/team/helper.rb", reference: "Helper", line: 3}),
+    ]);
+    expect(resolver.getDependencies("other.rb")).toEqual([]);
+  });
+
   it("uses literal configured roots, Rails.root.join, %w, arrays and lib ignore lists", () => {
     const {resolver} = setup({
       "config/application.rb":`module Demo; class Application < Rails::Application
