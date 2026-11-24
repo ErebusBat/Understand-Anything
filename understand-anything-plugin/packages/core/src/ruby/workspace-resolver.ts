@@ -2,12 +2,14 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { RubyDependencyResolver } from "./resolver.js";
+import { RailsViewResolver } from "./rails-views.js";
 import { extractRailsRouteDependencies } from "./rails-routes.js";
 import type { DependencyDiagnostic, DependencyFact, RubyDependencyFailure, RubyInventoryFile } from "./types.js";
 
 interface Context {
   prefix: string;
   resolver: RubyDependencyResolver;
+  views: RailsViewResolver;
 }
 
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
@@ -50,6 +52,15 @@ export class RubyWorkspaceDependencyResolver {
       group.push({...file, path: file.path.slice(prefix.length)});
       groups.set(prefix, group);
     }
+    const viewPaths = new Map<string, Set<string>>();
+    for (const file of options.files) {
+      if (!file.path.includes("app/views/")) continue;
+      const prefix = this.rootPrefixFor(file.path);
+      const path = file.path.slice(prefix.length);
+      if (!path.startsWith("app/views/")) continue;
+      if (!viewPaths.has(prefix)) viewPaths.set(prefix, new Set());
+      viewPaths.get(prefix)!.add(path);
+    }
     const boundary = realpathSync(options.projectRoot);
     for (const [prefix, inventory] of [...groups].sort(([a], [b]) => compare(a, b))) {
       let projectRoot: string;
@@ -69,7 +80,8 @@ export class RubyWorkspaceDependencyResolver {
         continue;
       }
       const resolver = new RubyDependencyResolver({projectRoot, files: inventory, plugin: options.plugin});
-      const context = {prefix, resolver};
+      const views = new RailsViewResolver([...(viewPaths.get(prefix) ?? [])], projectRoot, resolver, options.plugin);
+      const context = {prefix, resolver, views};
       this.projects.push(context);
       for (const {path} of inventory) this.owners.set(prefix + path, context);
       for (const [path, source] of resolver.sources) this.sources.set(prefix + path, source);
@@ -112,7 +124,7 @@ export class RubyWorkspaceDependencyResolver {
     if (!context) return [];
     const {prefix, resolver} = context;
     const localPath = path.slice(prefix.length);
-    const facts = [...resolver.getDependencies(localPath)];
+    const facts = [...resolver.getDependencies(localPath), ...context.views.dependencies(localPath)];
     const source = resolver.sources.get(localPath);
     if (source !== undefined && resolver.isRails && /(^|\/)config\/routes\.rb$/.test(localPath)) {
       const routes = extractRailsRouteDependencies({
