@@ -1532,6 +1532,14 @@ export function resolveRubyImport({ kind, source }, file, ctx) {
   // Load-path probe order
   const prefix = ctx.rubyRootPrefix ?? '';
   const probes = [`${prefix}lib/${withExt}`, `${prefix}app/${withExt}`, `${prefix}${withExt}`];
+  // RSpec adds the project's spec directory to the load path. Restrict this
+  // convention to explicit helper imports from that same suite.
+  if (toPosix(file.path).startsWith(prefix + 'spec/') && /^(?:spec_helper|rails_helper)(?:\.rb)?$/.test(source)) {
+    const helper = prefix + 'spec/' + withExt;
+    if (ctx.fileSet.has(helper)) {
+      return probes.some(p => ctx.fileSet.has(p)) ? [] : [helper];
+    }
+  }
   for (const p of probes) {
     if (ctx.fileSet.has(p)) return [p];
   }

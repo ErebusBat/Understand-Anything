@@ -1358,6 +1358,26 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
     expect(result.output.dependencyResolverVersion).toBe(3);
   });
 
+  it('resolves explicit RSpec helper requires inside the owning suite when unambiguous', () => {
+    const sources = {
+      'shop/config/application.rb': 'class Shop < Rails::Application; end',
+      'shop/spec/models/user_spec.rb': 'require "spec_helper"\nrequire "rails_helper"',
+      'shop/spec/spec_helper.rb': '',
+      'shop/spec/rails_helper.rb': '',
+      'shop/lib/rails_helper.rb': '',
+      'shop/app/models/user.rb': 'require "spec_helper"',
+      'other/config/application.rb': 'class Other < Rails::Application; end',
+      'other/spec/other_spec.rb': 'require "spec_helper"',
+    };
+    projectRoot = setupTree(sources);
+    const files = Object.keys(sources).map(path => ({path, language: 'ruby', fileCategory: 'code'}));
+    const result = runScript(projectRoot, {projectRoot, files});
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output.importMap['shop/spec/models/user_spec.rb']).toEqual(['shop/spec/spec_helper.rb']);
+    expect(result.output.importMap['other/spec/other_spec.rb']).toEqual([]);
+    expect(result.output.importMap['shop/app/models/user.rb']).toEqual([]);
+  });
+
   it('keeps explicit imports separate from typed Rails facts in full and selective scans', () => {
     const source = {
       'config/application.rb': 'module Demo; class Application < Rails::Application; end; end',
