@@ -47,7 +47,12 @@ export function symbolKind(node) {
   return null;
 }
 
-function qualifiedName(name) {
+function sourceName(name, language) {
+  return language === 'ruby' && typeof name === 'string' ? name.replace(/^::/, '') : name;
+}
+
+function qualifiedName(name, language) {
+  name = sourceName(name, language);
   return typeof name === 'string' ? name.replaceAll('::', '.').replaceAll('#', '.') : '';
 }
 
@@ -81,16 +86,16 @@ function validSupplement(evidence) {
 function scopeOwner(scope) {
   return scope.kind === 'class' ? scope.name : scope.kind === 'file' ? '' : null;
 }
-function compatibleEvidence(records, symbol) {
+function compatibleEvidence(records, symbol, language) {
   return records.filter(item => {
     if (item.scope.kind === 'local') return false;
     if (item.kind !== null && item.kind !== symbol.kind) return false;
     const owner = scopeOwner(item.scope);
-    if (item.scope.kind !== 'unknown' && qualifiedName(owner) !== qualifiedName(symbol.owner)) return false;
+    if (item.scope.kind !== 'unknown' && qualifiedName(owner, language) !== qualifiedName(symbol.owner)) return false;
     // Actual source names are not graph-ID spelling hints.
     const names = [symbol.name];
     if (item.scope.kind === 'unknown') names.push(names[0].split('.').at(-1));
-    if (item.name !== null && !names.includes(item.name)) return false;
+    if (item.name !== null && !names.includes(sourceName(item.name, language))) return false;
     return !item.nameSuffix || names.some(name => name.endsWith(item.nameSuffix));
   });
 }
@@ -133,6 +138,14 @@ function sourceSymbols(evidence) {
       symbols.push({ kind: 'callable', owner: unknownOwner || !classVerified ? null : cls.name, name, lineRange: cls.lineRange });
     }
   }
+  // A verified Ruby class name already includes its lexical namespace.
+  // The optional root qualifier is just another spelling of that identity.
+  if (evidence.language === 'ruby') {
+    for (const symbol of symbols) {
+      symbol.name = sourceName(symbol.name, evidence.language);
+      symbol.owner = sourceName(symbol.owner, evidence.language);
+    }
+  }
   return symbols;
 }
 
@@ -140,14 +153,14 @@ function ambiguousOwner(symbol, source) {
   return symbol.owner && source.filter(item => item.kind === 'class' && item.name === symbol.owner).length > 1;
 }
 
-function nodeNames(node) {
+function nodeNames(node, language) {
   const path = normalizePath(node.filePath);
-  const names = new Set([qualifiedName(node.name)]);
+  const names = new Set([qualifiedName(node.name, language)]);
   // Accept ID spelling changes, including func/function and class separators.
   // Path and kind are independently checked; the ID is only a name hint.
   const marker = `:${path}:`;
   if (typeof node.id === 'string' && node.id.includes(marker)) {
-    names.add(qualifiedName(node.id.slice(node.id.indexOf(marker) + marker.length)));
+    names.add(qualifiedName(node.id.slice(node.id.indexOf(marker) + marker.length), language));
   }
   return names;
 }
@@ -175,9 +188,9 @@ function hasPreservedIdentity(node, previous, current, sameRevision = false) {
   return true;
 }
 
-function resolveSymbol(node, graph, symbols) {
+function resolveSymbol(node, graph, symbols, language) {
   const kind = symbolKind(node);
-  const names = nodeNames(node);
+  const names = nodeNames(node, language);
   let candidates = symbols.filter(symbol => symbol.kind === kind && (
     names.has(qualifiedName(symbol.name))
     || (symbol.owner && names.has(qualifiedName(`${symbol.owner}.${symbol.name}`)))
@@ -185,7 +198,7 @@ function resolveSymbol(node, graph, symbols) {
   const qualified = candidates.filter(symbol => symbol.owner
     && names.has(qualifiedName(`${symbol.owner}.${symbol.name}`)));
   if (qualified.length) candidates = qualified;
-  const owners = classOwners(node, graph).map(parent => qualifiedName(parent.name));
+  const owners = classOwners(node, graph).map(parent => qualifiedName(parent.name, language));
   if (owners.length) candidates = candidates.filter(symbol => symbol.owner !== null && owners.includes(qualifiedName(symbol.owner)));
   // Lines locate ownership within one revision only; they are never identity
   // across revisions. Do not use lines to guess among overloads/same-name classes.
@@ -202,8 +215,8 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
   const newSymbols = current.nodes.filter(symbolKind);
   const baseSource = sourceSymbols(baseEvidence);
   const headSource = sourceSymbols(headEvidence);
-  const oldMappings = oldSymbols.map(node => resolveSymbol(node, previous, baseSource));
-  const newMappings = newSymbols.map(node => resolveSymbol(node, current, headSource));
+  const oldMappings = oldSymbols.map(node => resolveSymbol(node, previous, baseSource, baseEvidence?.language));
+  const newMappings = newSymbols.map(node => resolveSymbol(node, current, headSource, headEvidence?.language));
   const missing = [];
   const replacements = [];
   const evidenceValid = validSupplement(baseEvidence) && validSupplement(headEvidence);
@@ -253,9 +266,9 @@ export function compareFileSymbols(previous, current, baseEvidence, headEvidence
         entry.reason = 'Strict parser lacks valid scoped symbol evidence; rebuild the core package';
       } else {
         const uncertain = [
-          ...compatibleEvidence(baseEvidence.symbolEvidence.coverage.gaps, old).filter(item => item.reason === 'Unresolved declaration name'),
-          ...compatibleEvidence(headEvidence.symbolEvidence.coverage.gaps, old),
-          ...compatibleEvidence(headEvidence.symbolEvidence.effects, old),
+          ...compatibleEvidence(baseEvidence.symbolEvidence.coverage.gaps, old, baseEvidence.language).filter(item => item.reason === 'Unresolved declaration name'),
+          ...compatibleEvidence(headEvidence.symbolEvidence.coverage.gaps, old, headEvidence.language),
+          ...compatibleEvidence(headEvidence.symbolEvidence.effects, old, headEvidence.language),
         ];
         const reusedIndex = newSymbols.findIndex(candidate => candidate.id === node.id);
         if (uncertain.length) {

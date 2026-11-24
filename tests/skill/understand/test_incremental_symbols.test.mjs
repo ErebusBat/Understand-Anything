@@ -25,6 +25,11 @@ describe('incremental symbol matching', () => {
     const saved = graph([node('Billing::Order.process', { id: `function:${path}:Billing::Order.process`, filePath: path })]);
     const missing = source => compareFileSymbols(saved, graph([]), before, parseRuby(source)).missing[0].status;
     expect(missing('class Billing::Order\n def process; end\nend')).toBe('still-present');
+    const absolute = 'module Replacement\n class ::Billing::Order\n def process; end\n end\nend';
+    expect(missing(absolute)).toBe('still-present');
+    const renamedId = graph([node('::Billing::Order.process', { id: `function:${path}:::Billing::Order.process`, filePath: path })]);
+    expect(compareFileSymbols(saved, renamedId, before, parseRuby(absolute)).missing).toEqual([]);
+    expect(compareFileSymbols(renamedId, saved, parseRuby(absolute), before).missing).toEqual([]);
     expect(missing('module Billing\n if enabled?\n class Order\n def process; end\n end\n end\nend')).toBe('unknown');
     expect(missing('module Other\n class Order\n def process; end\n end\nend')).toBe('deleted');
   });
