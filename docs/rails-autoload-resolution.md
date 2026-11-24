@@ -8,7 +8,7 @@ Explicit `require` and `require_relative` relationships remain in `importMap`. T
 - `dependencyDiagnostics`: unsupported or ambiguous cases, with a code, message, source path, and optional line. Read and parse failures remain in `failures`.
 - `dependencyResolverVersion`: the persisted version of the dependency resolver.
 
-Constants and associations produce `depends_on`, superclasses produce `inherits`, and supported routes produce `routes`. `include` and `extend` keep their distinct evidence while both use `depends_on`. All endpoints are files: a model's `find` call or a route action name does not create a method node.
+Constants, associations and literal template renders produce `depends_on`, superclasses produce `inherits`, and supported routes produce `routes`. `include` and `extend` keep their distinct evidence while both use `depends_on`. All endpoints are files: a model's `find` call or a route action name does not create a method node.
 
 Batching uses the union of imports and typed dependencies for communities and neighbor context. It passes explicit imports in `batchImportData` and typed facts in `batchDependencyData`. Merge recovery restores missing facts deterministically, deduplicates file/type pairs, and keeps source evidence in edge descriptions.
 
@@ -25,6 +25,8 @@ Constant lookup preserves actual Ruby lexical nesting, compact namespaces, and l
 Direct `belongs_to`, `has_one`, `has_many`, and `has_and_belongs_to_many` associations are recognized in model and concern contexts when their names/options and local model targets can be resolved. Collection naming uses singularization; explicit `class_name` uses model namespace lookup. Polymorphic `belongs_to`, `through`, dynamic options, callback simulation, and join-model inference are outside this subset.
 
 Routes accept immediate literal HTTP declarations with `to: "controller#action"` and option-free `resources`/`resource` in the main application's `routes.draw` block. Both `Rails.application` and the statically declared application class can be the receiver. Literal `namespace` blocks qualify controller names, including when `path:` or `as:` changes the URL or route helpers. Singular resources pluralize the controller name. Other scopes, conditions, arbitrary blocks, mounts, drawn files, engine routes, and resource options produce diagnostics.
+
+A literal controller `render` can resolve to a single HTML ERB, Haml, or Slim template under the application's `app/views`. The lookup checks the controller's ancestry, view path overrides, and competing formats or variants. Each fact identifies the render call's source line. Implicit renders and runtime-selected templates remain unresolved.
 
 Ruby test pairing recognizes exact Minitest/RSpec unit-test paths, including `*_helper` units under `app/helpers`, and gem `lib` conventions, preserving namespaces and engine prefixes. Both files must exist. The direction is production → test. Request, system, integration, shared-example, and test-support paths are excluded; pairing is a naming heuristic, not proof of coverage.
 
