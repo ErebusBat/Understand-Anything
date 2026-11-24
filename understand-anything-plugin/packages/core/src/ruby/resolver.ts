@@ -14,6 +14,7 @@ interface Declaration {
   superclass?: string;
   mixins: string[];
   conditional: boolean;
+  wrapsDeclarations?: boolean;
 }
 interface Reference {
   reference: string;
@@ -197,6 +198,10 @@ export class RubyDependencyResolver {
         result.declarations.push(declaration);
         if (uncertain) this.addDiagnostic({path, code: "unsupported_declaration_scope", line: declaration.line, message: `Relative qualified declaration ${raw} inside another namespace is unsupported`});
         const body = node.childForFieldName("body");
+        if (body && declaration.kind === "class" && !superclass) {
+          const statements = rubyStatements(body);
+          declaration.wrapsDeclarations = statements.length > 0 && statements.every(s => s.type === "class" || s.type === "module");
+        }
         if (body) visit(body, [name, ...nesting], declaration, false, conditional || uncertain);
         return;
       }
@@ -279,6 +284,7 @@ export class RubyDependencyResolver {
   private buildIndex(): void {
     const roots = [...new Map(this.configuration.roots.map(r => [r.path, r])).values()].sort((a,b) => b.path.length - a.path.length || compare(a.path,b.path));
     const expectedOwners = new Map<string, string[]>();
+    const classWrappers = new Set<Declaration>();
     for (const [path, facts] of this.facts) {
       if (!path.endsWith(".rb")) continue;
       const root = roots.find(r => path.startsWith(r.path + "/"));
@@ -292,6 +298,7 @@ export class RubyDependencyResolver {
         // Namespace wrappers in a nested file are not additional autoload
         // targets or independent reopenings of the namespace's own file.
         if (expected?.startsWith(declaration.name + "::") && declaration.kind === "module" && !declaration.conditional) continue;
+        if (expected?.startsWith(declaration.name + "::") && declaration.wrapsDeclarations) classWrappers.add(declaration);
         const list = this.declarations.get(declaration.name) ?? [];
         list.push(declaration);
         this.declarations.set(declaration.name, list);
@@ -317,6 +324,15 @@ export class RubyDependencyResolver {
       this.addDiagnostic({path:null, code:"ambiguous_autoload_root", message:`Multiple roots map ${name}: ${paths.sort(compare).join(", ")}; loader precedence is unknown`});
     }
     for (const [name, definitions] of this.declarations) {
+      // A child file can open its parent class just to declare the nested
+      // class/module. Keep the canonical class's superclass and model identity.
+      if (this.bindings.has(name) && definitions.length > 1 && definitions.every(d => d.kind === "class" && !d.conditional)) {
+        const owners = definitions.filter(d => !classWrappers.has(d));
+        if (owners.length === 1) {
+          this.declarations.set(name, owners);
+          continue;
+        }
+      }
       // Once a module exists unconditionally, an optional reopening cannot
       // replace it. Its children retain their own conditional/shadowing checks.
       const namespaceReopenings = definitions.every(d => d.kind === "module") && definitions.some(d => !d.conditional);

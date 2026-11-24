@@ -127,6 +127,31 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics.map(d=>d.code)).toContain("unsupported_constant_assignment");
   });
 
+  it("retains a model's identity when a child file opens it only as a namespace", () => {
+    const {resolver} = setup({
+      "app/models/user.rb": "class User; end",
+      "app/models/account.rb": "class Account < ApplicationRecord; belongs_to :user; end",
+      "app/models/account/entry.rb": "class Account; class Entry; end; end",
+      "probe.rb": "Account.all; Account::Entry.new",
+    });
+    expect(targets(resolver, "probe.rb")).toEqual(["app/models/account.rb", "app/models/account/entry.rb"]);
+    expect(targets(resolver, "app/models/account.rb", "association")).toEqual(["app/models/user.rb"]);
+  });
+
+  it("keeps active, conditional, or incompatible class reopenings ambiguous", () => {
+    for (const source of [
+      "class Account; include External; class Entry; end; end",
+      "class Account; class Entry; end; end if enabled?",
+      "class Account < Something; class Entry; end; end",
+    ]) {
+      const {resolver} = setup({
+        "app/models/account.rb": "class Account; end",
+        "app/models/account/entry.rb": source,
+      });
+      expect(resolver.resolveConstant("Account::Entry")).toBeNull();
+    }
+  });
+
   it("does not fabricate mappings for mismatched filenames or dynamic declarations", () => {
     const {resolver} = setup({
       "app/models/html_parser.rb":"class HTMLParser; end",
