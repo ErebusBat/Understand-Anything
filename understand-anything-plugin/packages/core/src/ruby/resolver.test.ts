@@ -53,6 +53,28 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.getDependencies("lib/tasks/incomplete.rake")).toEqual([]);
   });
 
+  it("keeps test and task constant shadows local to their own source", () => {
+    const {resolver} = setup({
+      "app/models/user.rb": "class User; end",
+      "app/services/auth/token.rb": "module Auth; class Token; end; end",
+      "spec/helper.rb": `class Fixture
+        User = Object
+        User.new
+        ::User.new
+      end
+      Auth = Object
+      Auth::Token.new`,
+      "lib/tasks/snapshot.rake": "class Disposable < External; User.new; ::User.new; end",
+      "spec/auth.rb": "module Auth; class Probe; Token.new; end; end",
+      "probe.rb": "User.new; Auth::Token.new",
+    });
+    for (const file of ["spec/helper.rb", "lib/tasks/snapshot.rake"]) {
+      expect(resolver.getDependencies(file)).toEqual([expect.objectContaining({reference: "::User", target: "app/models/user.rb"})]);
+    }
+    expect(targets(resolver, "probe.rb")).toEqual(["app/models/user.rb", "app/services/auth/token.rb"]);
+    expect(targets(resolver, "spec/auth.rb")).toEqual(["app/services/auth/token.rb"]);
+  });
+
   it("finds conventional models/controllers, nested concerns, superclass and distinct include/extend", () => {
     const {resolver} = setup({
       "app/controllers/application_controller.rb":"class ApplicationController < ActionController::Base; end",

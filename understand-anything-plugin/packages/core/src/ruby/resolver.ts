@@ -73,6 +73,7 @@ export class RubyDependencyResolver {
   private readonly bindings = new Map<string, Set<string>>();
   private readonly literalBindings = new Map<string, string>();
   private readonly declarations = new Map<string, Declaration[]>();
+  private readonly consumerDeclarations = new Map<string, Map<string, Declaration[]>>();
   private readonly namespaces = new Set<string>();
   private readonly blocked = new Set<string>();
   private readonly dependencyCache = new Map<string, DependencyFact[]>();
@@ -300,10 +301,19 @@ export class RubyDependencyResolver {
     const classWrappers = new Set<Declaration>();
     const literalCandidates = new Set<Declaration>();
     for (const [path, facts] of this.facts) {
-      if (!path.endsWith(".rb")) continue;
       const root = roots.find(r => path.startsWith(r.path + "/"));
       const ignored = this.configuration.ignored.some(p => path === p || path.startsWith(p + "/") || path === p + ".rb");
-      if ((!root && !(this.configurationPaths.has(path) && /(?:^|\/)config\/initializers\//.test(path))) || ignored) continue;
+      if (!path.endsWith(".rb") || (!root && !(this.configurationPaths.has(path) && /(?:^|\/)config\/initializers\//.test(path))) || ignored) {
+        // A spec or task may define test doubles and local aliases. They
+        // participate in lookup in this file, even though Rails cannot
+        // autoload them for consumers in another file.
+        if (facts.declarations.length) {
+          const declarations = new Map<string, Declaration[]>();
+          for (const d of facts.declarations) declarations.set(d.name, [...(declarations.get(d.name) ?? []), d]);
+          this.consumerDeclarations.set(path, declarations);
+        }
+        continue;
+      }
       const expected = root ? this.configuration.inflections.camelize(path.slice(root.path.length + 1, -3), true) : null;
       if (expected) expectedOwners.set(expected, [...(expectedOwners.get(expected) ?? []), path]);
       const corroborated = expected && facts.declarations.some(d => d.name === expected && d.kind !== "assignment" && !d.conditional);
@@ -379,6 +389,24 @@ export class RubyDependencyResolver {
   }
 
   private exact(name: string, options: RubyResolveOptions): string | null {
+    const locals = options.path && this.consumerDeclarations.get(options.path);
+    if (locals) {
+      let prefix = name;
+      while (prefix) {
+        const local = locals.get(prefix);
+        if (local) {
+          // An unconditional namespace reopening still exposes its existing
+          // children. A local assignment, test double or conflicting kind
+          // can change what a qualified read refers to.
+          const providers = this.declarations.get(prefix);
+          const knownKind = providers?.[0]?.kind ?? (this.namespaces.has(prefix) ? "module" : undefined);
+          if (prefix === name || local.some(d => d.conditional || d.kind === "assignment" || d.kind !== knownKind)) return null;
+        }
+        const separator = prefix.lastIndexOf("::");
+        if (separator < 0) break;
+        prefix = prefix.slice(0, separator);
+      }
+    }
     if (options.valueRead && this.literalBindings.has(name) && !this.blockedPrefix(name.slice(0, name.lastIndexOf("::")))) {
       return this.literalBindings.get(name)!;
     }
@@ -399,6 +427,7 @@ export class RubyDependencyResolver {
       return options.association && target && !/(?:^|\/)app\/models\//.test(target) ? null : target;
     }
     const nesting = options.nesting ?? [];
+    const locals = options.path ? this.consumerDeclarations.get(options.path) : undefined;
     if (options.association) {
       // ActiveRecord tries the complete compute_type candidate at each level;
       // this differs from lexical first-component lookup.
@@ -413,48 +442,50 @@ export class RubyDependencyResolver {
     const first = reference.split("::")[0];
     for (const scope of nesting) {
       const name = `${scope}::${reference}`;
-      if (this.namespaces.has(`${scope}::${first}`) || this.blockedPrefix(`${scope}::${first}`)) return this.exact(name, options);
+      const candidate = `${scope}::${first}`;
+      if (locals?.has(candidate) || this.namespaces.has(candidate) || this.blockedPrefix(candidate)) return this.exact(name, options);
     }
     // Local inherited constants and mixin constants require Ruby's ancestor
     // rules. We deliberately suppress top-level fallback when those rules can
     // change a result, instead of pretending lexical search is complete.
-    if (nesting[0] && this.ancestorUncertain(nesting[0], first, new Set())) {
+    if (nesting[0] && this.ancestorUncertain(nesting[0], first, new Set(), locals)) {
       this.addDiagnostic({path:options.path ?? null, code:"unsupported_ancestor_lookup", message:`Ancestor constant lookup for ${reference} in ${nesting[0]} is unresolved`, ...(options.line ? {line:options.line} : {})});
       return null;
     }
     return this.exact(reference, options);
   }
 
-  private ancestorUncertain(name: string, first: string, seen: Set<string>): boolean {
+  private ancestorUncertain(name: string, first: string, seen: Set<string>, locals?: Map<string, Declaration[]>): boolean {
     if (seen.has(name) || this.blockedPrefix(name)) return true;
     seen.add(name);
-    const defs = this.declarations.get(name) ?? [];
+    const defs = [...(this.declarations.get(name) ?? []), ...(locals?.get(name) ?? [])];
     for (const def of defs) {
       const bases = [
         ...def.mixins.map(base => ({base, nesting:[def.name, ...def.nesting]})),
         ...(def.superclass ? [{base:def.superclass,nesting:def.nesting}] : []),
       ];
       for (const {base, nesting} of bases) {
-        const resolved = this.lexicalName(base, nesting);
+        const resolved = this.lexicalName(base, nesting, locals);
         if (this.blockedPrefix(resolved)) return true;
         // Only a matching first component can shadow this particular lookup.
-        if (this.namespaces.has(`${resolved}::${first}`)) return true;
+        if (this.namespaces.has(`${resolved}::${first}`) || locals?.has(`${resolved}::${first}`)) return true;
+        if (locals?.has(resolved)) return true;
         // Inspect local reopenings before trusting a well-known framework base.
         // A locally autoloaded lookalike is not evidence of framework identity.
         if ((FRAMEWORK_BASES.has(resolved) || resolved === "ActiveSupport::Concern") && !this.bindings.has(resolved) && !this.declarations.has(resolved)) continue;
         if (!this.declarations.has(resolved)) return true;
-        if (this.ancestorUncertain(resolved, first, new Set(seen))) return true;
+        if (this.ancestorUncertain(resolved, first, new Set(seen), locals)) return true;
       }
     }
     return false;
   }
 
-  private lexicalName(reference: string, nesting: string[]): string {
+  private lexicalName(reference: string, nesting: string[], locals?: Map<string, Declaration[]>): string {
     if (reference.startsWith("::")) return reference.slice(2);
     const first = reference.split("::")[0];
     for (const scope of nesting) {
       const prefix = `${scope}::${first}`;
-      if (this.namespaces.has(prefix) || this.blockedPrefix(prefix)) return `${scope}::${reference}`;
+      if (locals?.has(prefix) || this.namespaces.has(prefix) || this.blockedPrefix(prefix)) return `${scope}::${reference}`;
     }
     return reference;
   }
