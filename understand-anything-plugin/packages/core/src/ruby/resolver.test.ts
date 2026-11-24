@@ -426,6 +426,18 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics.map(d=>d.code)).toContain("unsupported_ancestor_lookup");
   });
 
+  it("checks only matching constants in known ancestors before top-level fallback", () => {
+    const {resolver} = setup({
+      "app/services/base.rb": "class Base; module Local; end; end",
+      "app/services/probe.rb": "class Probe < Base; User.find; Local::User.find; end",
+      "app/models/user.rb": "class User; end",
+      "app/models/local/user.rb": "module Local; class User; end; end",
+    });
+    expect(targets(resolver, "app/services/probe.rb", "constant")).toEqual(["app/models/user.rb"]);
+    expect(resolver.diagnostics.filter(d => d.code === "unsupported_ancestor_lookup").map(d => d.message))
+      .toEqual(["Ancestor constant lookup for Local::User in Probe is unresolved"]);
+  });
+
   it("keeps engine conventional roots and collisions, including concerns", () => {
     const {resolver} = setup({
       "engines/blog/lib/blog/engine.rb":"module Blog; class Engine < Rails::Engine; isolate_namespace Blog; end; end",

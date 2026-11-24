@@ -376,14 +376,14 @@ export class RubyDependencyResolver {
     // Local inherited constants and mixin constants require Ruby's ancestor
     // rules. We deliberately suppress top-level fallback when those rules can
     // change a result, instead of pretending lexical search is complete.
-    if (nesting[0] && this.ancestorUncertain(nesting[0], new Set())) {
+    if (nesting[0] && this.ancestorUncertain(nesting[0], first, new Set())) {
       this.addDiagnostic({path:options.path ?? null, code:"unsupported_ancestor_lookup", message:`Ancestor constant lookup for ${reference} in ${nesting[0]} is unresolved`, ...(options.line ? {line:options.line} : {})});
       return null;
     }
     return this.exact(reference, options);
   }
 
-  private ancestorUncertain(name: string, seen: Set<string>): boolean {
+  private ancestorUncertain(name: string, first: string, seen: Set<string>): boolean {
     if (seen.has(name) || this.blockedPrefix(name)) return true;
     seen.add(name);
     const defs = this.declarations.get(name) ?? [];
@@ -395,13 +395,13 @@ export class RubyDependencyResolver {
       for (const {base, nesting} of bases) {
         const resolved = this.lexicalName(base, nesting);
         if (this.blockedPrefix(resolved)) return true;
-        // Any project declaration nested under an ancestor can shadow fallback.
-        if ([...this.namespaces].some(n => n.startsWith(resolved + "::"))) return true;
+        // Only a matching first component can shadow this particular lookup.
+        if (this.namespaces.has(`${resolved}::${first}`)) return true;
         // Inspect local reopenings before trusting a well-known framework base.
         // A locally autoloaded lookalike is not evidence of framework identity.
         if ((FRAMEWORK_BASES.has(resolved) || resolved === "ActiveSupport::Concern") && !this.bindings.has(resolved) && !this.declarations.has(resolved)) continue;
         if (!this.declarations.has(resolved)) return true;
-        if (this.ancestorUncertain(resolved, new Set(seen))) return true;
+        if (this.ancestorUncertain(resolved, first, new Set(seen))) return true;
       }
     }
     return false;
