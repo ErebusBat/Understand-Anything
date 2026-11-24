@@ -297,12 +297,13 @@ After the subagent completes, read `$UA_DIR/intermediate/scan-result.json` to ge
 - Languages, frameworks
 - File list with line counts and `fileCategory` per file (`code`, `config`, `docs`, `infra`, `data`, `script`, `markup`)
 - Complexity estimate
-- Import map (`importMap`): pre-resolved project-internal imports per file (non-code files have empty arrays)
+- Import map (`importMap`): project-internal imports per file, including asset manifest directives
 - Typed dependencies (`dependencyMap`): resolved file facts with `target`, `type`, `kind`, and optional `reference`/`line`; kept separate from explicit imports
+- `dependencyContexts` records each Ruby application root and whether dependency inference was blocked.
 - `dependencyDiagnostics`: unsupported and ambiguous static-resolution cases, separate from extraction infrastructure failures
-- `dependencyResolverVersion`: copied from the extractor (`1` for the initial Ruby resolver)
+- `dependencyResolverVersion`: copied from the extractor
 
-Preserve both maps, diagnostics, and resolver version in `scan-result.json`; the batching helper reads this contract directly. Surface dependency diagnostic counts and limitations in the final report without converting them into guessed edges.
+Preserve both maps, application contexts, diagnostics, and resolver version in `scan-result.json`; the batching helper reads this contract directly. Surface dependency diagnostic counts and limitations in the final report without converting them into guessed edges.
 Store the file list as `$FILE_LIST` with `fileCategory` metadata for use in Phase 2 batch construction.
 
 **Gate check:** If >100 files, inform the user and suggest scoping with a subdirectory argument. Proceed only if user confirms or add guidance that this may take a while.

@@ -43,6 +43,13 @@ block every child constant merely because library files reopen that namespace.
 Class conflicts, assignments, conditional declarations, and competing autoload
 roots remain ambiguous, and module mixins remain part of ancestor checks.
 
+The resolver follows reads of unique nested literal constants and constants
+defined in Rails initializers. It records references in assignment right-hand
+sides and checks file-local shadows in tests and Rake tasks. For example, a
+locally defined test double can shadow the application model of the same name.
+An unconditional module declaration can establish a namespace even when an
+initializer conditionally reopens that module.
+
 The [vendored Ruby grammar](../understand-anything-plugin/packages/tree-sitter-ruby-wasm/BUILD.md)
 fixes adjacent append operators being mistaken for heredocs and parenthesized
 calls chained after command blocks. Strict structural and dependency analysis
@@ -82,8 +89,10 @@ root, Rails detection result, and blocked status. Rejected context roots appear 
 
 ## Completeness and upgrades
 
-A read/parse failure or unsupported loader configuration still blocks inferred
-dependencies within its owning context. Other application contexts can complete.
+A read or parse failure in a `.rb` file, or unsupported loader configuration,
+blocks inferred dependencies within its owning context. Ruby tasks, manifests
+and binstubs can consume autoloaded constants. A failed parse in one of those
+consumers is reported against that file. Other application contexts can complete.
 Inspect `failures`, `dependencyDiagnostics`, and `dependencyContexts`; a completed
 extractor process does not establish complete dependency coverage. Dynamic Ruby,
 ambiguous constants, unknown ancestors, and unsupported route DSL constructs

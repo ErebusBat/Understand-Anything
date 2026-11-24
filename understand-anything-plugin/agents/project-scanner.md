@@ -100,7 +100,7 @@ Output JSON shape (you will read this verbatim and merge into the final scan-res
 ```
 
 The script:
-- sorts `files` by `path.localeCompare` (deterministic)
+- sorts `files` by path in locale-independent order
 - emits `fileCategory ∈ {code, config, docs, infra, data, script, markup}` per file (priority-ordered per the rules below)
 - emits the language from the extension, filename or extensionless script interpreter, with a lowercased extension or `"unknown"` as fallback
 - counts `filteredByIgnore` as the delta beyond hardcoded defaults — `!`-negation in `.understandignore` correctly re-includes files
@@ -175,16 +175,19 @@ The output JSON has shape:
     "README.md": [],
     "Dockerfile": []
   },
+  "dependencyContexts": [],
   "dependencyDiagnostics": [],
-  "dependencyResolverVersion": 1
+  "dependencyResolverVersion": 4
 }
 ```
 
-Copy `importMap`, `dependencyMap`, `dependencyDiagnostics`, and `dependencyResolverVersion` verbatim into the final scan-result.json under the same keys. Both maps use the same project-relative file paths and have entries for every input file; arrays may be empty. `importMap` contains explicit resolved internal imports only. Keep typed facts separate.
+Copy `importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, and `dependencyResolverVersion` verbatim into the final scan-result.json under the same keys. Both maps use the same project-relative file paths and have entries for every input file; arrays may be empty. `importMap` contains explicit resolved internal imports only. Keep typed facts separate.
 
 Each `dependencyMap[sourceFilePath]` value is an array of `{ target: string, type: "depends_on" | "inherits" | "routes", kind: string, reference?: string, line?: number }`. Fact kinds include `constant`, `superclass`, `include`, `extend`, `association`, and `route`. These are file-level relationships. The core constant `RUBY_DEPENDENCY_RESOLVER_VERSION` supplies `dependencyResolverVersion`.
 
 `dependencyDiagnostics` contains `{ path: string | null, code: string, message: string, line?: number }` records for unsupported or ambiguous static resolution. Preserve these separately from extraction infrastructure failures and surface their limitations in the scan summary. An unresolved diagnostic is not permission to invent a dependency. Arbitrary Ruby, dynamic configuration/associations, and the complete route DSL are outside this resolver's scope.
+
+Report the count, path, and stage of any entries in the extractor’s `failures` array. Report each blocked application root from `dependencyContexts` as incomplete.
 
 **Capture stderr** when you run the bundled script. Any line starting with `Warning:` should be appended to phase warnings — the SKILL.md orchestrator captures these for the final report. The script also writes a one-line summary `extract-import-map: filesScanned=… filesWithImports=… totalEdges=…` on completion; you can ignore that line or surface it as informational.
 
@@ -196,12 +199,12 @@ Each `dependencyMap[sourceFilePath]` value is an array of `{ target: string, typ
 
 After Steps A + B + C have all completed, read:
 1. `$UA_DIR/tmp/ua-scan-files.json` — output of `scan-project.mjs` (file list with language, sizeLines, fileCategory; plus `totalFiles`, `filteredByIgnore`, `estimatedComplexity`).
-2. `$UA_DIR/tmp/ua-import-map-output.json` — output of `extract-import-map.mjs` (`importMap`, `dependencyMap`, `dependencyDiagnostics`, `dependencyResolverVersion`).
+2. `$UA_DIR/tmp/ua-import-map-output.json` — output of `extract-import-map.mjs` (`importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`).
 3. Your Step A in-memory notes (`name`, `rawDescription`, `readmeHead`, `frameworks`, `languages` narrative).
 
 Do NOT re-walk the file tree, re-count lines, or re-derive categories — trust `scan-project.mjs` entirely. Do NOT re-implement import resolution — trust `extract-import-map.mjs` entirely.
 
-**IMPORTANT:** The final output must NOT contain the `scriptCompleted` or `stats` fields from either bundled script, nor your transient `rawDescription` / `readmeHead` work-strings. Strip them when assembling the final JSON. The final `importMap`, `dependencyMap`, `dependencyDiagnostics`, and `dependencyResolverVersion` MUST equal their fields from `extract-import-map.mjs` verbatim (do not edit, re-sort, or filter them). The final `files` array MUST equal Step B's `files` array verbatim (do not re-order, drop, or augment it).
+**IMPORTANT:** The final output must NOT contain the `scriptCompleted` or `stats` fields from either bundled script, nor your transient `rawDescription` / `readmeHead` work-strings. Strip them when assembling the final JSON. The final `importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, and `dependencyResolverVersion` MUST equal their fields from `extract-import-map.mjs` verbatim (do not edit, re-sort, or filter them). The final `files` array MUST equal Step B's `files` array verbatim (do not re-order, drop, or augment it). Copy Step B's `contentDigest` into the final scan.
 
 Your only synthesis task in this phase is the final `description` field:
 
@@ -232,8 +235,9 @@ Then assemble the final output JSON:
   "dependencyMap": {
     "src/index.ts": [], "README.md": [], "Dockerfile": []
   },
+  "dependencyContexts": [],
   "dependencyDiagnostics": [],
-  "dependencyResolverVersion": 1
+  "dependencyResolverVersion": 4
 }
 ```
 
@@ -248,6 +252,7 @@ Then assemble the final output JSON:
 - `estimatedComplexity` (string): directly from Step B
 - `importMap` (object): directly from Step C's `importMap` field
 - `dependencyMap` (object): directly from Step C's typed file dependencies
+- `dependencyContexts` (object[]): copy each application's `root`, `isRails`, and `blocked` status from Step C
 - `dependencyDiagnostics` (object[]): directly from Step C, including unsupported and ambiguous cases
 - `dependencyResolverVersion` (integer): directly from Step C
 
