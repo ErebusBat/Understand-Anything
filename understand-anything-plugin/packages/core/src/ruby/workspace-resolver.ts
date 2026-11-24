@@ -115,7 +115,9 @@ export class RubyWorkspaceDependencyResolver {
     const facts = [...resolver.getDependencies(localPath)];
     const source = resolver.sources.get(localPath);
     if (source !== undefined && resolver.isRails && /(^|\/)config\/routes\.rb$/.test(localPath)) {
-      const routes = extractRailsRouteDependencies({path: localPath, source, plugin: this.options.plugin, resolver});
+      const routes = extractRailsRouteDependencies({
+        path: localPath, source, applicationSource: resolver.sources.get("config/application.rb"), plugin: this.options.plugin, resolver,
+      });
       facts.push(...routes.dependencies);
       resolver.diagnostics.push(...routes.diagnostics);
     }

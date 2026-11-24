@@ -1,5 +1,5 @@
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
-import { rubyCall, rubyLiteral, rubyOptions, rubyStatements, type RubyAstNode } from "./ast.js";
+import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubyStatements, type RubyAstNode } from "./ast.js";
 import type { DependencyDiagnostic, DependencyFact } from "./types.js";
 
 interface RouteResolver {
@@ -12,11 +12,44 @@ interface RouteResolver {
 const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "options"]);
 const CONTROLLER_PATH = /^[a-z][a-z\d_]*(?:\/[a-z][a-z\d_]*)*$/;
 
-/** A deliberately small route DSL: immediate literal statements in the main
- * application's routes.draw block. No scope, callback or action simulation. */
-export function extractRailsRouteDependencies({ path, source, plugin, resolver }: {
+/** Only unconditional, statically named declarations in the application's own
+ * config can establish a named routes.draw receiver. */
+function applicationClasses(body: RubyAstNode | null, namespace = ""): string[] {
+  const names: string[] = [];
+  for (const node of rubyStatements(body)) {
+    if (node.type !== "class" && node.type !== "module") continue;
+    const name = rubyConstant(node.childForFieldName("name"));
+    if (!name || (namespace && name.includes("::") && !name.startsWith("::"))) continue;
+    const qualified = name.startsWith("::") ? name.slice(2) : namespace + name;
+    const base = rubyConstant(node.childForFieldName("superclass")?.namedChildren[0]);
+    if (base?.replace(/^::/, "") === "Rails::Application") names.push(qualified);
+    names.push(...applicationClasses(node.childForFieldName("body"), qualified + "::"));
+  }
+  return names;
+}
+
+/** Traverse literal namespace blocks only. An unsupported scope can change
+ * every controller beneath it, so reject the whole subtree at its source line. */
+function* routeStatements(body: RubyAstNode | null, prefix = ""): Generator<{ node: RubyAstNode; prefix: string }> {
+  for (const node of rubyStatements(body)) {
+    const call = rubyCall(node);
+    if (call?.method === "namespace" && !call.receiver && call.block && !call.block.childForFieldName("parameters")) {
+      const name = rubyLiteral(call.args[0]);
+      const options = rubyOptions(call.args.slice(1));
+      if (typeof name === "string" && CONTROLLER_PATH.test(name) && options
+        && [...options].every(([key, value]) => ["path", "as"].includes(key) && typeof value === "string")) {
+        yield* routeStatements(call.block.childForFieldName("body"), prefix + name + "/");
+        continue;
+      }
+    }
+    yield { node, prefix };
+  }
+}
+
+export function extractRailsRouteDependencies({ path, source, applicationSource, plugin, resolver }: {
   path: string;
   source: string;
+  applicationSource?: string;
   plugin: TreeSitterPlugin;
   resolver: RouteResolver;
 }): { dependencies: DependencyFact[]; diagnostics: DependencyDiagnostic[] } {
@@ -31,23 +64,28 @@ export function extractRailsRouteDependencies({ path, source, plugin, resolver }
     reject(null, "Engine route namespaces are outside the supported literal route subset.");
     return { dependencies, diagnostics };
   }
+  const names = applicationSource
+    ? plugin.withSyntaxTree("config/application.rb", applicationSource, root => applicationClasses(root))
+    : [];
   plugin.withSyntaxTree(path, source, root => {
     for (const statement of rubyStatements(root)) {
       const draw = rubyCall(statement);
       const routes = rubyCall(draw?.receiver);
       const application = rubyCall(routes?.receiver);
+      const named = rubyConstant(routes?.receiver)?.replace(/^::/, "");
+      const defaultApplication = application?.method === "application" && application.args.length === 0 && !application.block
+        && rubyConstant(application.receiver)?.replace(/^::/, "") === "Rails";
       const recognized = draw?.method === "draw" && draw.args.length === 0 && draw.block
         && routes?.method === "routes" && routes.args.length === 0 && !routes.block
-        && application?.method === "application" && application.args.length === 0 && !application.block
-        && application.receiver?.type === "constant" && application.receiver.text === "Rails";
+        && (defaultApplication || (named && names.length === 1 && named === names[0]));
       if (!recognized || !draw?.block || draw.block.childForFieldName("parameters")) {
-        reject(statement, "Only direct Rails.application.routes.draw blocks without parameters are supported.");
+        reject(statement, "Expected a direct routes.draw block on Rails.application or the configured application class.");
         continue;
       }
-      for (const node of rubyStatements(draw.block.childForFieldName("body"))) {
+      for (const { node, prefix } of routeStatements(draw.block.childForFieldName("body"))) {
         const call = rubyCall(node);
         if (!call || call.receiver || call.block) {
-          reject(node, "Nested scopes, blocks, conditions and receiver-based routes are unsupported.");
+          reject(node, "Unsupported route scope, block, condition or receiver.");
           continue;
         }
         let controller: string | null = null;
@@ -80,7 +118,7 @@ export function extractRailsRouteDependencies({ path, source, plugin, resolver }
           reject(node, `Route DSL method ${call.method} is outside the supported subset.`);
           continue;
         }
-        const constant = controller && resolver.camelize(`${controller}_controller`);
+        const constant = controller && resolver.camelize(`${prefix}${controller}_controller`);
         if (!constant) {
           reject(node, "Controller inflection could not be determined statically.");
           continue;

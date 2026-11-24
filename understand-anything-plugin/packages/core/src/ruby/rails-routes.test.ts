@@ -40,9 +40,9 @@ describe("restricted Rails routes", () => {
     expect(result.dependencies.every(fact => fact.type === "routes" && fact.kind === "route" && fact.line)).toBe(true);
   });
 
-  it("rejects scopes, conditionals, overrides, filters, dynamic options, mounts and drawn files without flattening", () => {
+  it("rejects unsupported scopes, conditionals, overrides, filters, dynamic options, mounts and drawn files without flattening", () => {
     const result = extract(`Rails.application.routes.draw do
-      namespace :admin do
+      namespace :admin, module: dynamic do
         resources :people
       end
       scope module: :admin do
@@ -65,6 +65,18 @@ describe("restricted Rails routes", () => {
     expect(result.references).toEqual([]);
     expect(result.diagnostics).toHaveLength(12);
     expect(result.diagnostics.every(d => d.code === "unsupported-route" && d.line)).toBe(true);
+  });
+
+  it("preserves the controller module when a literal namespace changes its URL prefix", () => {
+    const result = extract(`Rails.application.routes.draw do
+      namespace :admin, path: "staff" do
+        get "people", to: "people#index"
+      end
+    end`);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.dependencies).toEqual([
+      expect.objectContaining({target: "app/controllers/admin/people_controller.rb", line: 3}),
+    ]);
   });
 
   it("does not enter draw blocks hidden inside conditionals or arbitrary receivers", () => {

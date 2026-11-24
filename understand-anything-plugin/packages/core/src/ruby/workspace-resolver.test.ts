@@ -36,6 +36,7 @@ describe("Ruby workspace contexts", () => {
   it("keeps duplicate constants and routes local across sibling roots", () => {
     const f = fixture({
       ...nested("alpha/master/"), ...nested("beta/"),
+      "alpha/master/config/routes.rb": "Demo::Application.routes.draw { resources :users }",
       "beta/app/models/only_beta.rb": "class OnlyBeta; end",
       "alpha/master/app/services/check.rb": "class Check; OnlyBeta.find; end",
     });
