@@ -534,6 +534,29 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     expect(result.scan.dependencyContexts).toContainEqual({root: 'service/master', isRails: true, blocked: false});
   });
 
+  it('refreshes unchanged asset manifests on resolver upgrades and processor changes', () => {
+    const manifest = 'app/assets/javascripts/application.js.coffee';
+    const target = 'app/assets/templates/menu.hbs';
+    const f = setupRepository({Gemfile: 'gem "handlebars_assets"', [manifest]: '#= require_tree ../templates', [target]: '{{menu}}'});
+    const scanPath = join(f.root, '.ua/intermediate/scan-result.json');
+    const baseline = JSON.parse(readFileSync(scanPath, 'utf8'));
+    baseline.dependencyResolverVersion = 3;
+    baseline.importMap[manifest] = [];
+    writeFileSync(scanPath, JSON.stringify(baseline));
+    const upgraded = prepare(f.root, f.baseCommit);
+    expect(upgraded.plan.importMapRefreshPaths).toContain(manifest);
+    expect(upgraded.scan.importMap[manifest]).toEqual([target]);
+
+    // A normal edit on a separate up-to-date baseline must also remove a stale
+    // require_tree entry when the Handlebars processor is removed.
+    const active = setupRepository({Gemfile: 'gem "handlebars_assets"', [manifest]: '#= require_tree ../templates', [target]: '{{menu}}'});
+    writeProjectFile(active.root, 'Gemfile', 'gem "rails"');
+    commit(active.root, 'remove template processor');
+    const disabled = prepare(active.root, active.baseCommit);
+    expect(disabled.plan.dependencyResolverVersionChanged).toBe(false);
+    expect(disabled.scan.importMap[manifest]).toEqual([]);
+  });
+
   it.each([undefined, 0, 1, 2, 3, 5])('migrates resolver version %s on an unchanged baseline, repeatably', version => {
     const f = railsFixture();
     const baseline = f.read('scan-result.json');

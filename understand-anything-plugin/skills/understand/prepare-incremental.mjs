@@ -35,6 +35,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { isSprocketsAsset } from './sprockets-imports.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(__dirname, '../..');
@@ -778,15 +779,17 @@ async function main() {
     forceRefresh: decision.action === 'FULL_UPDATE'
       || Boolean(graph?.project?.gitCommitHash && graph.project.gitCommitHash !== baseCommit),
   });
-  // Ruby resolver upgrades can change which application's lib/ supplies an
-  // explicit require as well as its inferred constants. Refresh both maps.
-  if (dependencyRefresh.versionChanged) {
-    importAnalysisPaths = sorted([...importAnalysisPaths, ...dependencyRefresh.paths]);
-  }
-  // SKIP finalization handles imports only. Typed facts must pass through the
-  // deterministic merge, even when Ruby fingerprints report cosmetic changes
-  // or the only change is an upgrade of the resolver on an unchanged commit.
-  if (decision.action === 'SKIP' && dependencyRefresh.paths.length > 0) {
+  // Resolver upgrades can change both Ruby requires and Rails asset directives.
+  // Gemfile edits can enable or disable a template processor for unchanged manifests.
+  const assetRefresh = dependencyRefresh.versionChanged || currentChangedPaths.some(path => basename(path) === 'Gemfile')
+    ? currentInventory.filter(isSprocketsAsset) : [];
+  importAnalysisPaths = sorted([
+    ...importAnalysisPaths, ...assetRefresh, ...(dependencyRefresh.versionChanged ? dependencyRefresh.paths : []),
+  ]);
+  // Route resolver-only upgrades through merge even on generated-only commits:
+  // the SKIP finalizer would otherwise leave the old graph published.
+  const needsDependencyMerge = dependencyRefresh.paths.length > 0 || (dependencyRefresh.versionChanged && assetRefresh.length > 0);
+  if (decision.action === 'SKIP' && needsDependencyMerge) {
     decision.action = 'PARTIAL_UPDATE';
     decision.reason = dependencyRefresh.versionChanged
       ? 'Ruby dependency resolver version changed; refresh deterministic facts'
@@ -820,7 +823,7 @@ async function main() {
   // Generated-only commits keep the source baseline unless a resolver upgrade
   // requires a deterministic merge. Other zero-token paths still refresh the
   // scan so cosmetic line counts and ignore changes are saved.
-  if (!onlyGeneratedArtifacts || dependencyRefresh.paths.length > 0) atomicWriteJson(scanPath, refreshedScan);
+  if (!onlyGeneratedArtifacts || needsDependencyMerge) atomicWriteJson(scanPath, refreshedScan);
 
   const plan = {
     baseCommit,
