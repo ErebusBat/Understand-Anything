@@ -1987,6 +1987,43 @@ describe('large repository benchmark CLI', () => {
     );
   }, 70_000);
 
+  it('carries Rails dependency evidence through batching and into the output digest', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ua-benchmark-rails-'));
+    cleanup.push(root);
+    const subject = join(root, 'subject');
+    const file = 'app/services/probe.rb';
+    mkdirSync(join(subject, 'app/services'), { recursive: true });
+    mkdirSync(join(subject, 'config'));
+    writeFileSync(join(subject, 'config/application.rb'), 'class App < Rails::Application; end\n');
+    writeFileSync(join(subject, 'app/services/widget.rb'), 'class Widget; end\n');
+
+    const digests = [];
+    for (const reference of ['Widget', '::Widget']) {
+      writeFileSync(join(subject, file), `class Probe; def execute; ${reference}; end; end\n`);
+      const options = parseArgs([subject, '--output', join(root, 'report.json'), '--keep-artifacts']);
+      const result = await benchmark.runBenchmark(options);
+      cleanup.push(result.artifactRoot);
+      expect(result.exitCode, result.report.error).toBe(0);
+      expectValidReport(result.report);
+      expect(result.report.stages.imports.edges).toBe(0);
+      const read = name => JSON.parse(readFileSync(join(result.artifactRoot, name), 'utf8'));
+      const scan = read('scan-result-with-imports.json');
+      const { batches } = read('batches.json');
+      const batch = batches.find(b => b.files.some(f => f.path === file));
+      const facts = [{ target: 'app/services/widget.rb', type: 'depends_on', kind: 'constant', line: 1, reference }];
+      expect(scan.dependencyMap[file]).toEqual(facts);
+      expect(batch.batchDependencyData[file]).toEqual(facts);
+      expect(read(`structure-input-${batch.batchIndex}.json`).batchDependencyData[file]).toEqual(facts);
+      expect(result.report.stages.batching.estimatedAgentInputBytes).toBe(batches.reduce(
+        (sum, { files, batchImportData, batchDependencyData, neighborMap }) =>
+          sum + Buffer.byteLength(JSON.stringify({ files, batchImportData, batchDependencyData, neighborMap })),
+        0,
+      ));
+      digests.push(result.report.determinism.outputDigest);
+    }
+    expect(digests[1]).not.toBe(digests[0]);
+  }, 70_000);
+
   it('keeps full Unicode benchmark digests stable across locale environments', () => {
     const { root, subject } = makeSubject();
     cleanup.push(root);

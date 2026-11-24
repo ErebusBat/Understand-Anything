@@ -731,11 +731,19 @@ function validateScanArtifact(scan) {
   }
 }
 
-function validateImportArtifact(imports) {
+function validateImportArtifact(imports, files) {
+  const paths = new Set(files.map(file => file.path));
   if (
     !isRecord(imports) ||
     imports.scriptCompleted !== true ||
     !isRecord(imports.importMap) ||
+    !isRecord(imports.dependencyMap) ||
+    Object.entries(imports.dependencyMap).some(([source, facts]) =>
+      !paths.has(source) || !Array.isArray(facts) || facts.some(fact =>
+        !isRecord(fact) || !paths.has(fact.target) ||
+        typeof fact.type !== 'string' || typeof fact.kind !== 'string'
+      )
+    ) ||
     !isRecord(imports.stats) ||
     !isNonNegativeInteger(imports.stats.filesScanned) ||
     !isNonNegativeInteger(imports.stats.filesWithImports) ||
@@ -765,6 +773,7 @@ function validateBatchArtifact(batches) {
         !isNonNegativeInteger(batch.batchIndex) ||
         !Array.isArray(batch.files) ||
         !isRecord(batch.batchImportData) ||
+        !isRecord(batch.batchDependencyData) ||
         !isRecord(batch.neighborMap),
     )
   ) {
@@ -1783,7 +1792,7 @@ export async function runBenchmark(options, hooks = {}) {
     if (importStage.status === 'ok') {
       try {
         imports = readJson(importOutputPath);
-        validateImportArtifact(imports);
+        validateImportArtifact(imports, scan.files);
       } catch (error) {
         markArtifactFailure(importStage, 'imports', error, redactionRoots);
         report.stages.imports = summarizeStage(
@@ -1805,7 +1814,14 @@ export async function runBenchmark(options, hooks = {}) {
 
     const enrichedScanPath = join(artifactRoot, 'scan-result-with-imports.json');
     const batchesPath = join(artifactRoot, 'batches.json');
-    const enrichedScan = { ...scan, importMap: imports.importMap };
+    const enrichedScan = {
+      ...scan,
+      importMap: imports.importMap,
+      dependencyMap: imports.dependencyMap,
+      dependencyContexts: imports.dependencyContexts,
+      dependencyDiagnostics: imports.dependencyDiagnostics,
+      dependencyResolverVersion: imports.dependencyResolverVersion,
+    };
     writeJson(enrichedScanPath, enrichedScan);
     onProgress('batching');
     const batchStage = await runStage(
@@ -1845,6 +1861,7 @@ export async function runBenchmark(options, hooks = {}) {
           JSON.stringify({
             files: batch.files,
             batchImportData: batch.batchImportData,
+            batchDependencyData: batch.batchDependencyData,
             neighborMap: batch.neighborMap,
           }),
         ),
@@ -1875,6 +1892,7 @@ export async function runBenchmark(options, hooks = {}) {
           projectRoot: options.repoRoot,
           batchFiles: batch.files,
           batchImportData: batch.batchImportData,
+          batchDependencyData: batch.batchDependencyData,
         });
         const stage = await runStage(
           `structure:${batch.batchIndex}`,

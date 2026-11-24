@@ -17,6 +17,11 @@ It reports wall-clock time, CPU time where available, peak resident memory,
 output size, repository scale, batching statistics, structural coverage, and
 deterministic SHA-256 digests.
 
+`stages.imports.edges` counts explicit imports. Resolved typed dependencies
+also contribute to batch planning, the estimated agent input size, and the
+output digest. The digest covers the complete batch payload, including each
+dependency's type and source evidence.
+
 For the regular scan, imports, and batching helpers, `peakRssBytes` is the peak
 RSS of that helper process. The concurrent structure stage instead reports
 `maxWorkerPeakRssBytes`, the maximum peak RSS of any individual worker, not a
