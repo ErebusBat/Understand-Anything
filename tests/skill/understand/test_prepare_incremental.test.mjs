@@ -378,6 +378,28 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
   }
   const targets = (scan, source = consumer) => [...new Set(scan.dependencyMap[source].map(fact => fact.target))].sort();
 
+  it('retains independently directed edges alongside refreshed forward facts through publication', () => {
+    const f = railsFixture();
+    const baseline = f.read('scan-result.json');
+    baseline.dependencyResolverVersion = 0;
+    f.write('scan-result.json', baseline);
+    const graphPath = join(f.root, '.ua', 'knowledge-graph.json');
+    const graph = JSON.parse(readFileSync(graphPath, 'utf8'));
+    const pair = { source: `file:${consumer}`, target: `file:${target}`, type: 'depends_on' };
+    const reverse = { ...pair, direction: 'backward', weight: 0.8, description: 'Independent analyzer evidence' };
+    graph.edges.unshift(reverse);
+    writeFileSync(graphPath, JSON.stringify(graph));
+
+    expect(prepare(f.root, f.baseCommit).plan.filesToReanalyze).toEqual([]);
+    run(python, [mergeScript, f.root], f.root);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    const saved = JSON.parse(readFileSync(graphPath, 'utf8'));
+    expect(saved.edges).toContainEqual(reverse);
+    expect(saved.edges).toContainEqual(expect.objectContaining({
+      ...pair, direction: 'forward', recoveredFromDependencyMap: true,
+    }));
+  });
+
   it('invalidates an unchanged consumer when the target declaration changes', () => {
     const f = railsFixture();
     expect(targets(f.read('scan-result.json'))).toContain(target);

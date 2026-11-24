@@ -291,7 +291,7 @@ function normalizeAssembled(assembled) {
   for (const edge of assembled?.edges ?? []) {
     if (!nodeIds.has(edge?.source) || !nodeIds.has(edge?.target)) continue;
     if (edge.source === edge.target) continue;
-    const key = `${edge.source}\0${edge.target}\0${edge.type}`;
+    const key = JSON.stringify([edge.source, edge.target, edge.type, edge.direction ?? 'forward']);
     if (seenEdges.has(key)) continue;
     seenEdges.add(key);
     edges.push(edge);

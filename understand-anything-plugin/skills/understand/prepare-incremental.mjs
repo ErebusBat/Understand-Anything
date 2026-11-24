@@ -545,6 +545,7 @@ function pruneExistingGraph(graph, pathsToReplace, importPathsToRefresh = new Se
     const target = filePathById.get(edge.target);
     return source && target && dependencyPathsToRefresh.has(source)
       && DEPENDENCY_TYPES.has(edge.type)
+      && (edge.direction ?? 'forward') === 'forward'
       && (edge.recoveredFromDependencyMap === true
         || previousFacts.has(JSON.stringify([source, target, edge.type])));
   }
