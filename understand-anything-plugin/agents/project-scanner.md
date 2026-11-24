@@ -102,7 +102,7 @@ Output JSON shape (you will read this verbatim and merge into the final scan-res
 The script:
 - sorts `files` by `path.localeCompare` (deterministic)
 - emits `fileCategory ∈ {code, config, docs, infra, data, script, markup}` per file (priority-ordered per the rules below)
-- emits `language` as a non-null string for every file (canonical id for known extensions, lowercased extension for unknowns, `"unknown"` for no-extension files that don't match `Dockerfile` / `Makefile` / `Jenkinsfile`)
+- emits the language from the extension, filename or extensionless script interpreter, with a lowercased extension or `"unknown"` as fallback
 - counts `filteredByIgnore` as the delta beyond hardcoded defaults — `!`-negation in `.understandignore` correctly re-includes files
 - emits `Warning: scan-project: <path> — <reason> — file skipped from output` on stderr for per-file failures (permission denied, malformed unicode, vanished file). Capture these and append to phase warnings.
 - emits `scan-project: filesScanned=… filteredByIgnore=… complexity=…` as the final stderr summary line; informational only.
@@ -117,8 +117,8 @@ The script:
 | `.yaml`, `.yml`, `.json`, `.jsonc`, `.toml`, `.xml`, `.xsl`, `.xsd`, `.plist`, `.cfg`, `.ini`, `.env`, `.properties`, `.csproj`, `.sln`, `.mod`, `.sum`, `.gradle`, `.sbt` | `config` |
 | `.tf`, `.tfvars` | `infra` |
 | `.sql`, `.graphql`, `.gql`, `.proto`, `.prisma`, `.csv`, `.tsv` | `data` |
-| `.sh`, `.bash`, `.zsh`, `.ps1`, `.psm1`, `.psd1`, `.bat`, `.cmd` | `script` |
-| `.html`, `.htm`, `.css`, `.scss`, `.sass`, `.less` | `markup` |
+| `.sh`, `.bash`, `.zsh`, `.ps1`, `.psm1`, `.psd1`, `.bat`, `.cmd`, extensionless shell scripts | `script` |
+| `.html`, `.htm`, `.css`, `.scss`, `.sass`, `.less`, `.haml`, `.hbs`, `.handlebars`, `.erb` | `markup` (`.erb` uses its output extension when recognized, e.g. `.yml.erb` → `config`) |
 | Everything else | `code` |
 
 **Priority rule:** most-specific wins. Filename / path rules fire before extension rules — e.g., `docker-compose.yml` is `infra` (not `config`); `.github/workflows/ci.yml` is `infra` (not `config`); `LICENSE` is `code` (not `docs`).

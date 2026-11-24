@@ -225,6 +225,25 @@ describe('scan-project.mjs — language detection', () => {
     expect(byPath(r.output, 'd.scss').language).toBe('css');
   });
 
+  it('classifies Rails views, asset templates and CoffeeScript source', () => {
+    const cases = [
+      ['views/show.html.haml', 'haml', 'markup'],
+      ['views/show.html.erb', 'erb', 'markup'],
+      ['views/_item.erb', 'erb', 'markup'],
+      ['views/items.js.erb', 'erb', 'code'],
+      ['views/mail.text.erb', 'erb', 'docs'],
+      ['config/database.yml.erb', 'erb', 'config'],
+      ['templates/item.hbs', 'handlebars', 'markup'],
+      ['templates/item.handlebars', 'handlebars', 'markup'],
+      ['assets/app.js.coffee', 'coffeescript', 'code'],
+    ];
+    projectRoot = setupTree(Object.fromEntries(cases.map(([path]) => [path, ''])));
+    const { output } = runScript(projectRoot);
+    for (const [path, language, fileCategory] of cases) {
+      expect(byPath(output, path)).toMatchObject({ language, fileCategory });
+    }
+  });
+
   it('maps configuration formats (YAML, JSON, JSONC, TOML, XML, Markdown) to their language ids', () => {
     projectRoot = setupTree({
       'a.yaml': 'x: 1\n',

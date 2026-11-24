@@ -122,6 +122,7 @@ const LANGUAGE_BY_EXT = Object.freeze({
   '.jsx': 'javascript',
   '.mjs': 'javascript',
   '.cjs': 'javascript',
+  '.coffee': 'coffeescript',
   // Python
   '.py': 'python',
   '.pyi': 'python',
@@ -163,6 +164,8 @@ const LANGUAGE_BY_EXT = Object.freeze({
   // Markup / docs
   '.html': 'html',
   '.htm': 'html',
+  '.hbs': 'handlebars',
+  '.handlebars': 'handlebars',
   '.css': 'css',
   '.scss': 'css',
   '.sass': 'css',
@@ -336,6 +339,10 @@ const CATEGORY_BY_EXT = Object.freeze({
   // markup
   '.html': 'markup',
   '.htm': 'markup',
+  '.haml': 'markup',
+  '.hbs': 'markup',
+  '.handlebars': 'markup',
+  '.erb': 'markup',
   '.css': 'markup',
   '.scss': 'markup',
   '.sass': 'markup',
@@ -398,6 +405,14 @@ export function detectCategory(filePath, language) {
   if (/(^|\/)(k8s|kubernetes)\//.test(posix)) return 'infra';
   // `*.k8s.yml` and `*.k8s.yaml` — Kubernetes-flavored YAML.
   if (/\.k8s\.(ya?ml)$/i.test(base)) return 'infra';
+
+  // Embedded Ruby can generate HTML, JavaScript, text, or configuration.
+  // Preserve a recognized output format (e.g. database.yml.erb).
+  if (ext === '.erb') {
+    const outputExt = extname(base.slice(0, -ext.length)).toLowerCase();
+    if (CATEGORY_BY_EXT[outputExt]) return CATEGORY_BY_EXT[outputExt];
+    if (LANGUAGE_BY_EXT[outputExt] || languageRegistry.getByExtension(outputExt)?.treeSitter) return 'code';
+  }
 
   // Rule 4: extension-based lookup.
   if (ext) {
