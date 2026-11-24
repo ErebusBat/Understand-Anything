@@ -30,6 +30,8 @@ export const DEFAULT_IGNORE_PATTERNS: string[] = [
   // Lock files
   "*.lock",
   "package-lock.json",
+  "npm-shrinkwrap.json",
+  "npm-shrinkwrap-*.json",
   "yarn.lock",
   "pnpm-lock.yaml",
 
@@ -47,6 +49,12 @@ export const DEFAULT_IGNORE_PATTERNS: string[] = [
   "*.mp3",
   "*.mp4",
   "*.pdf",
+  "*.doc",
+  "*.docx",
+  "*.xls",
+  "*.xlsx",
+  "*.ppt",
+  "*.pptx",
   "*.zip",
   "*.tar",
   "*.gz",
@@ -64,6 +72,7 @@ export const DEFAULT_IGNORE_PATTERNS: string[] = [
   // Misc
   "LICENSE",
   ".gitignore",
+  ".gitkeep",
   ".understandignore",
   ".editorconfig",
   ".prettierrc",

@@ -66,6 +66,8 @@ describe("IgnoreFilter", () => {
       const filter = createIgnoreFilter(testDir);
       expect(filter.isIgnored("pnpm-lock.yaml")).toBe(true);
       expect(filter.isIgnored("package-lock.json")).toBe(true);
+      expect(filter.isIgnored("npm-shrinkwrap.json")).toBe(true);
+      expect(filter.isIgnored("clients/web/npm-shrinkwrap-staging.json")).toBe(true);
       expect(filter.isIgnored("yarn.lock")).toBe(true);
     });
 
@@ -74,6 +76,9 @@ describe("IgnoreFilter", () => {
       expect(filter.isIgnored("logo.png")).toBe(true);
       expect(filter.isIgnored("font.woff2")).toBe(true);
       expect(filter.isIgnored("doc.pdf")).toBe(true);
+      expect(filter.isIgnored("spec/fixtures/invalid.doc")).toBe(true);
+      expect(filter.isIgnored("spec/fixtures/invalid.xls")).toBe(true);
+      expect(filter.isIgnored("spec/fixtures/example.csv")).toBe(false);
     });
 
     it("ignores generated files", () => {
@@ -81,6 +86,7 @@ describe("IgnoreFilter", () => {
       expect(filter.isIgnored("bundle.min.js")).toBe(true);
       expect(filter.isIgnored("style.min.css")).toBe(true);
       expect(filter.isIgnored("source.map")).toBe(true);
+      expect(filter.isIgnored("app/assets/.gitkeep")).toBe(true);
     });
 
     it("ignores IDE directories", () => {
