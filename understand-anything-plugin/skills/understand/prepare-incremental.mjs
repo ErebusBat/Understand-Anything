@@ -365,6 +365,7 @@ function analyzeInventoryChanges({
   oldFingerprints,
   oldInventory,
   deletedFiles,
+  reclassifiedPaths,
 }) {
   const oldInventorySet = new Set(oldInventory);
   const fileChanges = [];
@@ -384,12 +385,12 @@ function analyzeInventoryChanges({
       fileChanges.push({ filePath, changeLevel: 'STRUCTURAL', details: ['new file'] });
       continue;
     }
-    if (!previous) {
+    if (!previous || reclassifiedPaths.has(filePath)) {
       structurallyChangedFiles.push(filePath);
       fileChanges.push({
         filePath,
         changeLevel: 'STRUCTURAL',
-        details: ['no fingerprint baseline — conservative classification'],
+        details: [previous ? 'scanner language or category changed' : 'no fingerprint baseline — conservative classification'],
       });
       continue;
     }
@@ -701,9 +702,17 @@ async function main() {
       path => !currentInventorySet.has(path) && !oldInventorySet.has(path),
     ),
   );
+  // A scanner upgrade can change which parser or analyzer owns a file even
+  // when the bytes and Git commit match the previous scan.
+  const previousFiles = new Map((baselineScan?.files ?? []).map(file => [file.path, file]));
+  const reclassifiedPaths = new Set(currentScan.files.filter(file => {
+    const previous = previousFiles.get(file.path);
+    return previous && ['language', 'fileCategory'].some(key => previous[key] && previous[key] !== file[key]);
+  }).map(file => file.path));
   const currentChangedPaths = sorted([
     ...nonGeneratedDiffPaths.filter(path => currentInventorySet.has(path)),
     ...currentInventory.filter(path => !oldInventorySet.has(path)),
+    ...reclassifiedPaths,
   ]);
 
   const currentFingerprints = await buildCurrentFingerprints(
@@ -717,6 +726,7 @@ async function main() {
     oldFingerprints,
     oldInventory,
     deletedFiles,
+    reclassifiedPaths,
   });
   const decision = classifyUpdate(
     analysis,
@@ -751,6 +761,7 @@ async function main() {
   const importResolutionContextChanged =
     analysis.newFiles.length > 0
     || deletedFiles.length > 0
+    || reclassifiedPaths.size > 0
     || currentChangedPaths.some(isImportResolverConfig);
   let importAnalysisPaths = importResolutionContextChanged
     ? currentInventory
@@ -759,7 +770,7 @@ async function main() {
     previousScan: baselineScan,
     currentScan,
     graph: baselineGraph,
-    changedPaths: nonGeneratedDiffPaths,
+    changedPaths: [...nonGeneratedDiffPaths, ...reclassifiedPaths],
     inventoryChanged: analysis.newFiles.length > 0 || deletedFiles.length > 0,
     // A failed finalization may have published a newer graph before saving
     // fingerprints/meta. Re-enter merge from the immutable graph baseline;

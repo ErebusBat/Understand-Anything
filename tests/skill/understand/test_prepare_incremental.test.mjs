@@ -500,6 +500,20 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     }));
   });
 
+  it('reanalyzes an unchanged file when scanner metadata routes it to a different analyzer', () => {
+    const path = 'app/views/users/show.html.haml';
+    const f = setupRepository({[path]: '%h1 Users', 'README.md': '# test', 'lib/user.rb': 'class User; end'});
+    const scanPath = join(f.root, '.ua/intermediate/scan-result.json');
+    const baseline = JSON.parse(readFileSync(scanPath, 'utf8'));
+    const template = baseline.files.find(file => file.path === path);
+    Object.assign(template, {language: 'unknown', fileCategory: 'code'});
+    writeFileSync(scanPath, JSON.stringify(baseline));
+    const {plan, scan} = prepare(f.root, f.baseCommit);
+    expect(plan.action).toBe('PARTIAL_UPDATE');
+    expect(plan.filesToReanalyze).toEqual([path]);
+    expect(scan.files.find(file => file.path === path)).toMatchObject({language: 'haml', fileCategory: 'markup'});
+  });
+
   it('refreshes application-scoped requires when upgrading the workspace resolver', () => {
     const consumer = 'service/master/app/services/report.rb';
     const f = setupRepository({
