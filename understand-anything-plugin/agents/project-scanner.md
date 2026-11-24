@@ -182,7 +182,7 @@ The output JSON has shape:
 
 Copy `importMap`, `dependencyMap`, `dependencyDiagnostics`, and `dependencyResolverVersion` verbatim into the final scan-result.json under the same keys. Both maps use the same project-relative file paths and have entries for every input file; arrays may be empty. `importMap` contains explicit resolved internal imports only. Keep typed facts separate.
 
-Each `dependencyMap[sourceFilePath]` value is an array of `{ target: string, type: "depends_on" | "inherits" | "routes", kind: string, reference?: string, line?: number }`. Fact kinds include `constant`, `superclass`, `include`, `extend`, `association`, and `route`. These are file-level relationships. The core constant `RUBY_DEPENDENCY_RESOLVER_VERSION` supplies `dependencyResolverVersion` (currently `1`).
+Each `dependencyMap[sourceFilePath]` value is an array of `{ target: string, type: "depends_on" | "inherits" | "routes", kind: string, reference?: string, line?: number }`. Fact kinds include `constant`, `superclass`, `include`, `extend`, `association`, and `route`. These are file-level relationships. The core constant `RUBY_DEPENDENCY_RESOLVER_VERSION` supplies `dependencyResolverVersion`.
 
 `dependencyDiagnostics` contains `{ path: string | null, code: string, message: string, line?: number }` records for unsupported or ambiguous static resolution. Preserve these separately from extraction infrastructure failures and surface their limitations in the scan summary. An unresolved diagnostic is not permission to invent a dependency. Arbitrary Ruby, dynamic configuration/associations, and the complete route DSL are outside this resolver's scope.
 
