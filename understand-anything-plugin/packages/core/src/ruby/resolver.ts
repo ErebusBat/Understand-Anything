@@ -72,18 +72,21 @@ export class RubyDependencyResolver {
 
   constructor(options: { projectRoot: string; files: RubyInventoryFile[]; plugin: TreeSitterPlugin }) {
     const {projectRoot, plugin} = options;
-    const paths = [...new Set(options.files.filter(f => f.path.endsWith(".rb")).map(f => f.path))].sort(compare);
+    const paths = [...new Set(options.files.filter(f => f.path.endsWith(".rb") || f.language === "ruby").map(f => f.path))].sort(compare);
+    const autoloadPaths = paths.filter(path => path.endsWith(".rb"));
     const trees = new Map<string, { application: boolean; engines: boolean }>();
     for (const path of paths) {
+      const autoloadable = path.endsWith(".rb");
       let source: string;
       try { source = readFileSync(safeRubySourcePath(projectRoot, path), "utf8"); }
       catch (error) {
         this.failures.push({path, stage: "ruby-file-read", message: errorMessage(error)});
-        this.indexIncomplete = true;
+        if (autoloadable) this.indexIncomplete = true;
         continue;
       }
       try {
         const detected = plugin.withSyntaxTree(path, source, root => {
+          if (!autoloadable) return {application: false, engines: false};
           let engines = false;
           walkRuby(root, node => {
             if (node.type === "class" && rubyConstant(node.childForFieldName("superclass")?.namedChildren[0])?.replace(/^::/, "") === "Rails::Engine") engines = true;
@@ -94,11 +97,11 @@ export class RubyDependencyResolver {
         this.sources.set(path, source);
       } catch (error) {
         this.failures.push({path, stage: "ruby-file-parse", message: errorMessage(error)});
-        this.indexIncomplete = true;
+        if (autoloadable) this.indexIncomplete = true;
       }
     }
     this.isRails = [...trees.values()].some(t => t.application || t.engines);
-    this.configuration = initialRubyConfiguration(paths, this.isRails);
+    this.configuration = initialRubyConfiguration(autoloadPaths, this.isRails);
     if (!this.isRails) return;
     const engineConfigPrefixes = new Set<string>();
     const engineRoots = new Map<string, string>();
@@ -111,12 +114,13 @@ export class RubyDependencyResolver {
         const prefix = match[1];
         engineRoots.set(path, prefix.replace(/\/$/, ""));
         engineConfigPrefixes.add(`${prefix}config/`);
-        for (const root of initialRubyConfiguration(paths.filter(p => p.startsWith(prefix)).map(p => p.slice(prefix.length)), true).roots) {
+        for (const root of initialRubyConfiguration(autoloadPaths.filter(p => p.startsWith(prefix)).map(p => p.slice(prefix.length)), true).roots) {
           this.configuration.roots.push({...root, path: prefix + root.path, provenance: path});
         }
       }
     }
     for (const [path, source] of this.sources) {
+      if (!path.endsWith(".rb")) continue;
       if (path.startsWith("config/") || [...engineConfigPrefixes].some(prefix => path.startsWith(prefix)) || trees.get(path)?.engines) {
         this.configurationPaths.add(path);
         plugin.withSyntaxTree(path, source, root => readRubyConfiguration(path, root, this.configuration, this.collectedDiagnostics, {
@@ -126,18 +130,22 @@ export class RubyDependencyResolver {
     }
     // A failed parse/read can hide an alias, root override, or duplicate. Never
     // turn that incomplete inventory into confident dependency facts.
-    if (this.configuration.unsafe || this.indexIncomplete) return;
+    if (this.inferenceBlocked) return;
     for (const [path, source] of this.sources) {
       this.facts.set(path, plugin.withSyntaxTree(path, source, root => this.extractFacts(path, root)));
     }
     this.buildIndex();
   }
 
+  get inferenceBlocked(): boolean {
+    return this.configuration.unsafe || this.indexIncomplete;
+  }
+
   camelize(value: string): string | null {
-    return this.configuration.unsafe || this.indexIncomplete ? null : this.configuration.inflections.camelize(value);
+    return this.inferenceBlocked ? null : this.configuration.inflections.camelize(value);
   }
   pluralize(value: string): string | null {
-    return this.configuration.unsafe || this.indexIncomplete ? null : this.configuration.inflections.pluralize(value);
+    return this.inferenceBlocked ? null : this.configuration.inflections.pluralize(value);
   }
 
   private addDiagnostic(diagnostic: DependencyDiagnostic): void {
@@ -272,6 +280,7 @@ export class RubyDependencyResolver {
     const roots = [...new Map(this.configuration.roots.map(r => [r.path, r])).values()].sort((a,b) => b.path.length - a.path.length || compare(a.path,b.path));
     const expectedOwners = new Map<string, string[]>();
     for (const [path, facts] of this.facts) {
+      if (!path.endsWith(".rb")) continue;
       const root = roots.find(r => path.startsWith(r.path + "/"));
       const ignored = this.configuration.ignored.some(p => path === p || path.startsWith(p + "/") || path === p + ".rb");
       if ((!root && !(this.configurationPaths.has(path) && /(?:^|\/)config\/initializers\//.test(path))) || ignored) continue;
@@ -341,7 +350,7 @@ export class RubyDependencyResolver {
   /** Returns a file endpoint only. A known namespace with a missing child
    * stops relative lookup; there is no globally-unique-basename fallback. */
   resolveConstant(reference: string, options: RubyResolveOptions = {}): string | null {
-    if (!this.isRails || this.configuration.unsafe || this.indexIncomplete || !/^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*$/.test(reference)) return null;
+    if (!this.isRails || this.inferenceBlocked || !/^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*$/.test(reference)) return null;
     if (reference.startsWith("::")) {
       const target = this.exact(reference.slice(2), options);
       return options.association && target && !/(?:^|\/)app\/models\//.test(target) ? null : target;

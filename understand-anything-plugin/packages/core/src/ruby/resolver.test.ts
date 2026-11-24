@@ -39,6 +39,20 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics).toEqual([]);
   });
 
+  it("resolves Rake consumers without using their declarations or failures as autoload evidence", () => {
+    const {resolver} = setup({
+      "app/models/user.rb": "class User; end",
+      "config/initializers/probe.rake": "class TaskOnly < Rails::Engine; end; task(:probe) { User.find }",
+      "app/models/user.rake": "class User; end",
+      "lib/tasks/incomplete.rake": "class",
+    });
+    expect(resolver.inferenceBlocked).toBe(false);
+    expect(resolver.failures).toEqual([expect.objectContaining({path: "lib/tasks/incomplete.rake", stage: "ruby-file-parse"})]);
+    expect(resolver.resolveConstant("TaskOnly")).toBeNull();
+    expect(targets(resolver, "config/initializers/probe.rake")).toEqual(["app/models/user.rb"]);
+    expect(resolver.getDependencies("lib/tasks/incomplete.rake")).toEqual([]);
+  });
+
   it("finds conventional models/controllers, nested concerns, superclass and distinct include/extend", () => {
     const {resolver} = setup({
       "app/controllers/application_controller.rb":"class ApplicationController < ActionController::Base; end",
