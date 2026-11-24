@@ -582,6 +582,35 @@ describe('scan-project.mjs — data-dir resolution (.ua vs legacy)', () => {
     expect(r.output.files.map(file => file.path)).toEqual(['src/index.ts']);
   });
 
+  it('prunes default and analysis trees before reading them in the fallback walker', () => {
+    projectRoot = setupTree({
+      'vendor/probe.cjs': `
+        const fs = require('node:fs');
+        const { basename } = require('node:path');
+        const read = fs.readdirSync;
+        fs.readdirSync = function(dir, options) {
+          if (['vendor', '.ua', '.understand-anything', 'build'].includes(basename(dir))) {
+            throw Error('visited excluded directory');
+          }
+          return read(dir, options);
+        };
+        require('node:module').syncBuiltinESMExports();`,
+      '.ua/backups/old.json': '{}',
+      '.understand-anything/tmp/scan.json': '{}',
+      'nested/build/output.js': 'generated',
+      '.understandignore': '!node_modules/\nfixtures/\n',
+      'node_modules/local.js': 're-included',
+      'fixtures/drop.rb': 'user exclusion',
+    }, { gitInit: false });
+    const probe = join(projectRoot, 'vendor/probe.cjs');
+    const r = runScript(projectRoot, ['--exclude-analysis-data'], { NODE_OPTIONS: `--require ${JSON.stringify(probe)}` });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toContain('falling back to recursive walk');
+    expect(r.stderr).not.toContain('visited excluded directory');
+    expect(r.output.files.map(file => file.path)).toEqual(['node_modules/local.js']);
+    expect(r.output.filteredByIgnore).toBe(1);
+  });
+
   it('composes CLI exclusions for benchmark scans regardless of flag order', () => {
     projectRoot = setupTree({
       '.ua/knowledge-graph.json': '{ "nodes": [] }\n',

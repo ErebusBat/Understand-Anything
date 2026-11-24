@@ -520,25 +520,14 @@ function enumerateViaGit(projectRoot) {
 
 /**
  * Recursive directory walker — fallback when `git ls-files` is unavailable
- * (no git, not a repo, or git refused). Skips hard-coded "obviously bad"
- * directory names BEFORE invoking the ignore filter so we don't waste cycles
- * descending into `node_modules/` etc. on huge trees.
+ * (no git, not a repo, or git refused). Prune excluded subtrees before
+ * materializing their contents.
  *
  * Yields project-relative POSIX paths in directory-sorted order so the
  * output is deterministic without an extra sort pass.
  */
-function enumerateViaWalk(projectRoot) {
-  // Hard skip — these directories are universally non-source and skipping
-  // at the walker level avoids materializing thousands of node_modules
-  // paths before the ignore filter drops them. The ignore filter still
-  // runs on everything else.
-  const HARD_SKIP_DIRS = new Set([
-    'node_modules',
-    '.git',
-    '.svn',
-    '.hg',
-    '__pycache__',
-  ]);
+function enumerateViaWalk(projectRoot, skipDirectory) {
+  const vcsMetadata = new Set(['.git', '.svn', '.hg']);
 
   const out = [];
 
@@ -558,12 +547,13 @@ function enumerateViaWalk(projectRoot) {
     // OS-specific readdir order.
     entries.sort((a, b) => compareStableStrings(a.name, b.name));
     for (const ent of entries) {
+      const absolute = join(absDir, ent.name);
+      const rel = toPosix(relative(projectRoot, absolute));
       if (ent.isDirectory()) {
-        if (HARD_SKIP_DIRS.has(ent.name)) continue;
-        walk(join(absDir, ent.name));
+        if (vcsMetadata.has(ent.name) || skipDirectory(rel + '/')) continue;
+        walk(absolute);
       } else if (ent.isFile()) {
-        const rel = toPosix(relative(projectRoot, join(absDir, ent.name)));
-        if (rel) out.push(rel);
+        out.push(rel);
       }
       // Symlinks intentionally ignored — git ls-files doesn't follow them
       // either, and following them is a classic recursion-bomb footgun.
@@ -580,13 +570,13 @@ function enumerateViaWalk(projectRoot) {
  * repo. Returns an array of project-relative POSIX paths in unspecified
  * order — caller is responsible for sorting + filtering.
  */
-function enumerateFiles(projectRoot) {
+function enumerateFiles(projectRoot, skipDirectory) {
   const fromGit = enumerateViaGit(projectRoot);
   if (fromGit !== null) return fromGit;
   process.stderr.write(
     `scan-project: git ls-files unavailable — falling back to recursive walk\n`,
   );
-  return enumerateViaWalk(projectRoot);
+  return enumerateViaWalk(projectRoot, skipDirectory);
 }
 
 // ---------------------------------------------------------------------------
@@ -765,22 +755,21 @@ async function main() {
 
   const failures = [];
 
-  // 1. Enumerate. Either git ls-files or recursive walk.
-  const candidates = enumerateFiles(projectRoot).filter(
-    rel =>
-      !excludeAnalysisData ||
-      (!rel.startsWith('.ua/') && !rel.startsWith('.understand-anything/')),
-  );
-
-  // 2. Filter via createIgnoreFilter (defaults + .understandignore + CLI excludes).
-  //    Build a defaults-only filter in parallel to count user-driven drops.
   const combined = createIgnoreFilter(projectRoot, excludePatterns);
   const userIgnoresPresent = hasUserIgnoreFile(projectRoot) || excludePatterns.length > 0;
   const defaultsOnly = userIgnoresPresent ? buildDefaultsOnlyFilter() : combined;
+  const isAnalysisData = rel => excludeAnalysisData &&
+    (rel.startsWith('.ua/') || rel.startsWith('.understand-anything/'));
+  // User-only exclusions must still be counted per file. A negated default
+  // must still be walked so re-included descendants can enter the inventory.
+  const skipDirectory = dir => isAnalysisData(dir) ||
+    (defaultsOnly.isIgnored(dir) && combined.isIgnored(dir));
+  const candidates = enumerateFiles(projectRoot, skipDirectory);
 
   let filteredByIgnore = 0;
   const kept = [];
   for (const rel of candidates) {
+    if (isAnalysisData(rel)) continue;
     const isIgnoredCombined = combined.isIgnored(rel);
     if (!isIgnoredCombined) {
       kept.push(rel);
