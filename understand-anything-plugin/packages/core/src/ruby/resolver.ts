@@ -55,7 +55,8 @@ export function safeRubySourcePath(projectRoot: string, path: string): string {
  * No Ruby, Rails, application configuration, or globs are executed. */
 export class RubyDependencyResolver {
   readonly sources = new Map<string, string>();
-  readonly diagnostics: DependencyDiagnostic[] = [];
+  private readonly collectedDiagnostics: DependencyDiagnostic[] = [];
+  private sortedDiagnosticCount = 0;
   readonly failures: RubyDependencyFailure[] = [];
   readonly isRails: boolean;
   readonly configuration: RubyConfiguration;
@@ -118,19 +119,18 @@ export class RubyDependencyResolver {
     for (const [path, source] of this.sources) {
       if (path.startsWith("config/") || [...engineConfigPrefixes].some(prefix => path.startsWith(prefix)) || trees.get(path)?.engines) {
         this.configurationPaths.add(path);
-        plugin.withSyntaxTree(path, source, root => readRubyConfiguration(path, root, this.configuration, this.diagnostics, {
+        plugin.withSyntaxTree(path, source, root => readRubyConfiguration(path, root, this.configuration, this.collectedDiagnostics, {
           projectRoot, applicationRootKnown:[...trees.values()].some(t => t.application), engineRoot:engineRoots.get(path),
         }));
       }
     }
     // A failed parse/read can hide an alias, root override, or duplicate. Never
     // turn that incomplete inventory into confident dependency facts.
-    if (this.configuration.unsafe || this.indexIncomplete) { this.sortDiagnostics(); return; }
+    if (this.configuration.unsafe || this.indexIncomplete) return;
     for (const [path, source] of this.sources) {
       this.facts.set(path, plugin.withSyntaxTree(path, source, root => this.extractFacts(path, root)));
     }
     this.buildIndex();
-    this.sortDiagnostics();
   }
 
   camelize(value: string): string | null {
@@ -142,12 +142,28 @@ export class RubyDependencyResolver {
 
   private addDiagnostic(diagnostic: DependencyDiagnostic): void {
     const key = JSON.stringify(diagnostic);
-    if (!this.diagnosticKeys.has(key)) { this.diagnosticKeys.add(key); this.diagnostics.push(diagnostic); }
+    if (!this.diagnosticKeys.has(key)) { this.diagnosticKeys.add(key); this.collectedDiagnostics.push(diagnostic); }
+  }
+
+  get diagnostics(): DependencyDiagnostic[] {
+    if (this.collectedDiagnostics.length !== this.sortedDiagnosticCount) this.sortDiagnostics();
+    return this.collectedDiagnostics;
   }
 
   sortDiagnostics(): void {
-    const unique = new Map(this.diagnostics.map(d => [JSON.stringify(d), d]));
-    this.diagnostics.splice(0, this.diagnostics.length, ...[...unique.values()].sort((a,b) => compare(a.path ?? "", b.path ?? "") || (a.line ?? 0) - (b.line ?? 0) || compare(a.code,b.code) || compare(a.message,b.message)));
+    const diagnostics = this.collectedDiagnostics;
+    const unique = new Set<string>();
+    let count = 0;
+    for (const diagnostic of diagnostics) {
+      const key = JSON.stringify(diagnostic);
+      if (!unique.has(key)) {
+        unique.add(key);
+        diagnostics[count++] = diagnostic;
+      }
+    }
+    diagnostics.length = count;
+    diagnostics.sort((a,b) => compare(a.path ?? "", b.path ?? "") || (a.line ?? 0) - (b.line ?? 0) || compare(a.code,b.code) || compare(a.message,b.message));
+    this.sortedDiagnosticCount = count;
   }
 
   private extractFacts(path: string, root: RubyAstNode): RubyFileFacts {
@@ -406,7 +422,6 @@ export class RubyDependencyResolver {
     }
     const unique = [...new Map(found.map(f => [JSON.stringify(f),f])).values()].sort((a,b) => compare(a.target,b.target) || compare(a.type,b.type) || compare(a.kind,b.kind) || compare(a.reference ?? "",b.reference ?? "") || (a.line ?? 0) - (b.line ?? 0));
     this.dependencyCache.set(path, unique);
-    this.sortDiagnostics();
     return unique;
   }
 
