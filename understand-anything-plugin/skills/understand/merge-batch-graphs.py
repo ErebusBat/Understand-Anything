@@ -427,15 +427,18 @@ def _ruby_production_candidates(test_path: str) -> list[str]:
     tail = segments[root + 1:-1]
     excluded = {
         "helper", "helpers", "support", "shared", "shared_examples", "shared_contexts",
-        "request", "requests", "system", "integration", "api", "features",
         "fixtures", "factories", "dummy", "test", "spec",
     }
-    if any(part in excluded for part in tail):
+    # Request/feature suites have no single unit under test. The same names
+    # inside a production unit tree (controllers/api, services/request) are
+    # real namespaces and must be retained for an exact path match.
+    broad_suites = {"request", "requests", "system", "integration", "api", "features"}
+    if (tail and tail[0] in broad_suites) or any(part in excluded for part in tail):
         return []
     rails_units = {
         "models", "controllers", "services", "jobs", "mailers", "channels",
         "validators", "serializers", "presenters", "decorators", "policies",
-        "workers", "forms", "queries", "components",
+        "workers", "forms", "queries", "components", "graphql",
     }
     if tail and tail[0] in rails_units:
         target = [*prefix, "app", *tail, f"{base}.rb"]
