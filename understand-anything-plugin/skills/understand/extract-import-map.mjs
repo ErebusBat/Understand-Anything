@@ -49,6 +49,7 @@ import { dirname, resolve, join, posix, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { createSprocketsResolver } from './sprockets-imports.mjs';
 
 /**
  * Read a list of files concurrently while preserving result order. Failures
@@ -2043,6 +2044,22 @@ async function main() {
     ? createRubyWorkspaceDependencyResolver({ projectRoot, files, plugin: tsPlugin })
     : null;
   if (rubyResolver) failures.push(...rubyResolver.failures);
+  const sprockets = createSprocketsResolver(files, scope => {
+    const gemfile = scope + 'Gemfile';
+    const content = rubyResolver?.sources.get(gemfile);
+    if (!content) return false;
+    try {
+      // Only enable Handlebars-to-JS for an unconditional literal dependency.
+      return tsPlugin.withSyntaxTree(gemfile, content, root => root.namedChildren.some(node => {
+        const call = rubyCall(node);
+        return call?.method === 'gem' && !call.receiver && !call.block
+          && rubyLiteral(call.args[0]) === 'handlebars_assets'
+          && call.args.slice(1).every(arg => typeof rubyLiteral(arg) === 'string');
+      }));
+    } catch {
+      return false;
+    }
+  });
   const dependencyMap = {};
   for (const file of [...analysisFiles].sort((a, b) => comparePaths(a.path, b.path))) {
     const path = toPosix(file.path);
@@ -2058,8 +2075,8 @@ async function main() {
   for (const file of analysisFiles) {
     const path = toPosix(file.path);
 
-    // Non-code files always get an empty array
-    if (file.fileCategory !== 'code' && file.language !== 'ruby') {
+    const sprocketsSource = sprockets.isSource(path);
+    if (file.fileCategory !== 'code' && file.language !== 'ruby' && !sprocketsSource) {
       importMap[path] = [];
       continue;
     }
@@ -2086,6 +2103,9 @@ async function main() {
           continue;
         }
       } else {
+        if (sprocketsSource && realpathSync(absolutePath) !== join(realpathSync(projectRoot), path)) {
+          throw new Error('Symbolic link in asset load path');
+        }
         content = readFileSync(absolutePath, 'utf-8');
       }
     } catch (err) {
@@ -2101,7 +2121,7 @@ async function main() {
     // Analyze + resolve
     let resolved;
     try {
-      const resolvedSet = new Set();
+      const resolvedSet = new Set(sprocketsSource ? sprockets.imports(path, content) : []);
 
       // Ruby is the only language whose tree-sitter import field doesn't
       // preserve the require vs require_relative discriminator, so the
@@ -2114,7 +2134,7 @@ async function main() {
             if (out && ctx.fileSet.has(out) && (!out.endsWith('.rb') || rubyResolver?.sources.has(out))) resolvedSet.add(out);
           }
         }
-      } else {
+      } else if (file.fileCategory === 'code') {
         const analysis = registry.analyzeFile(file.path, content);
         const imports = analysis?.imports ?? [];
         for (const imp of imports) {
