@@ -201,6 +201,19 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.resolveConstant("Settings::FEATURE")).toBeNull();
   });
 
+  it("resolves literal values defined in loaded Rails initializers", () => {
+    const {resolver} = setup({
+      "config/initializers/gateway.rb": "module Gateway; PLACEHOLDER = 'proxy'.freeze; TOKEN = ENV['TOKEN']; end",
+      "config/initializers/default.rb": "DEFAULT_PORT = 80",
+      "config/examples/config/initializers/sample.rb": "SAMPLE_KEY = 1",
+      "probe.rb": "Gateway::PLACEHOLDER; DEFAULT_PORT; Gateway::TOKEN; SAMPLE_KEY",
+    });
+    expect(resolver.getDependencies("probe.rb").map(f => [f.reference, f.target])).toEqual([
+      ["DEFAULT_PORT", "config/initializers/default.rb"],
+      ["Gateway::PLACEHOLDER", "config/initializers/gateway.rb"],
+    ]);
+  });
+
   it("extracts constant reads from initializers without turning assigned aliases into autoload targets", () => {
     const {resolver} = setup({
       "app/models/user.rb": "class User; end",

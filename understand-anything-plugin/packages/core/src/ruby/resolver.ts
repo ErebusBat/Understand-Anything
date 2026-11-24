@@ -78,7 +78,7 @@ export class RubyDependencyResolver {
   private readonly blocked = new Set<string>();
   private readonly dependencyCache = new Map<string, DependencyFact[]>();
   private readonly diagnosticKeys = new Set<string>();
-  private readonly configurationPaths = new Set<string>();
+  private readonly initializerPaths = new Set<string>();
   private indexIncomplete = false;
 
   constructor(options: { projectRoot: string; files: RubyInventoryFile[]; plugin: TreeSitterPlugin }) {
@@ -130,10 +130,11 @@ export class RubyDependencyResolver {
         }
       }
     }
+    const configPrefixes = ["config/", ...engineConfigPrefixes];
     for (const [path, source] of this.sources) {
       if (!path.endsWith(".rb")) continue;
-      if (path.startsWith("config/") || [...engineConfigPrefixes].some(prefix => path.startsWith(prefix)) || trees.get(path)?.engines) {
-        this.configurationPaths.add(path);
+      if (configPrefixes.some(prefix => path.startsWith(prefix + "initializers/"))) this.initializerPaths.add(path);
+      if (configPrefixes.some(prefix => path.startsWith(prefix)) || trees.get(path)?.engines) {
         plugin.withSyntaxTree(path, source, root => readRubyConfiguration(path, root, this.configuration, this.collectedDiagnostics, {
           projectRoot, applicationRootKnown:[...trees.values()].some(t => t.application), engineRoot:engineRoots.get(path),
         }));
@@ -303,7 +304,8 @@ export class RubyDependencyResolver {
     for (const [path, facts] of this.facts) {
       const root = roots.find(r => path.startsWith(r.path + "/"));
       const ignored = this.configuration.ignored.some(p => path === p || path.startsWith(p + "/") || path === p + ".rb");
-      if (!path.endsWith(".rb") || (!root && !(this.configurationPaths.has(path) && /(?:^|\/)config\/initializers\//.test(path))) || ignored) {
+      const initializer = this.initializerPaths.has(path);
+      if (!path.endsWith(".rb") || (!root && !initializer) || ignored) {
         // A spec or task may define test doubles and local aliases. They
         // participate in lookup in this file, even though Rails cannot
         // autoload them for consumers in another file.
@@ -323,7 +325,7 @@ export class RubyDependencyResolver {
         // targets or independent reopenings of the namespace's own file.
         if (expected?.startsWith(declaration.name + "::") && declaration.kind === "module" && !declaration.conditional) continue;
         if (expected?.startsWith(declaration.name + "::") && declaration.wrapsDeclarations) classWrappers.add(declaration);
-        if (corroborated && declaration.literalValue && !declaration.conditional && declaration.name.startsWith(expected + "::")) {
+        if (declaration.literalValue && !declaration.conditional && (initializer || (corroborated && declaration.name.startsWith(expected + "::")))) {
           literalCandidates.add(declaration);
         }
         const list = this.declarations.get(declaration.name) ?? [];
@@ -407,8 +409,9 @@ export class RubyDependencyResolver {
         prefix = prefix.slice(0, separator);
       }
     }
-    if (options.valueRead && this.literalBindings.has(name) && !this.blockedPrefix(name.slice(0, name.lastIndexOf("::")))) {
-      return this.literalBindings.get(name)!;
+    if (options.valueRead && this.literalBindings.has(name)) {
+      const separator = name.lastIndexOf("::");
+      if (separator < 0 || !this.blockedPrefix(name.slice(0, separator))) return this.literalBindings.get(name)!;
     }
     if (this.blockedPrefix(name)) {
       this.addDiagnostic({path: options.path ?? null, code: "ambiguous_constant_reference", message: `Constant ${name} has shadowing or multiple-definition evidence`, ...(options.line ? {line:options.line} : {})});
