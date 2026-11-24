@@ -53,6 +53,13 @@ export class LanguageRegistry {
     const basename = filePath.split(/[\\/]/).pop() ?? filePath;
     const filenameMatch = this.byFilename.get(basename.toLowerCase());
     if (filenameMatch) return filenameMatch;
+    // A suffix can select a Docker build environment. For dash and underscore
+    // variants, confirm the first instruction to avoid matching unrelated text.
+    if ((basename.startsWith("Dockerfile.") && !basename.endsWith(".dockerignore"))
+      || (/^Dockerfile[-_]\w+$/.test(basename) && content && /^(?:\s*#[^\n]*\n)*\s*(?:FROM|ARG)\s+/i.test(content.slice(0, 256)))) {
+      const dockerfile = this.getById("dockerfile");
+      if (dockerfile) return dockerfile;
+    }
     // Fall back to extension-based lookup
     const lastDot = basename.lastIndexOf(".");
     if (lastDot >= 0) {

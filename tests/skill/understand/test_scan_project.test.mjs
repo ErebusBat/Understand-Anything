@@ -271,6 +271,7 @@ describe('scan-project.mjs — language detection', () => {
       'b.bat': '@echo off\n',
       Dockerfile: 'FROM node:22\n',
       'Dockerfile.dev': 'FROM node:22\n',
+      'Dockerfile_fast': 'FROM node:22\n',
     });
     const r = runScript(projectRoot);
     expect(r.status).toBe(0);
@@ -278,6 +279,7 @@ describe('scan-project.mjs — language detection', () => {
     expect(byPath(r.output, 'b.bat').language).toBe('batch');
     expect(byPath(r.output, 'Dockerfile').language).toBe('dockerfile');
     expect(byPath(r.output, 'Dockerfile.dev').language).toBe('dockerfile');
+    expect(byPath(r.output, 'Dockerfile_fast')).toMatchObject({language: 'dockerfile', fileCategory: 'infra'});
   });
 
   it('falls back to "unknown" for files with no extension and no filename match', () => {

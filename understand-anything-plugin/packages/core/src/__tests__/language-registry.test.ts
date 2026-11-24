@@ -136,6 +136,10 @@ describe("LanguageRegistry", () => {
       expect(registry.getForFile("Makefile")?.id).toBe("makefile");
       expect(registry.getForFile("Jenkinsfile")?.id).toBe("jenkinsfile");
       expect(registry.getForFile("src/Dockerfile")?.id).toBe("dockerfile");
+      expect(registry.getForFile("deploy/Dockerfile.eks")?.id).toBe("dockerfile");
+      expect(registry.getForFile("Dockerfile_fast", "# image\nFROM alpine")?.id).toBe("dockerfile");
+      expect(registry.getForFile("Dockerfile_notes", "text")).toBeNull();
+      expect(registry.getForFile("Dockerfile.dev.dockerignore")).toBeNull();
       expect(registry.getForFile("build/Makefile")?.id).toBe("makefile");
     });
 

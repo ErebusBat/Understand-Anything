@@ -239,7 +239,7 @@ export function detectLanguage(filePath, contentHead) {
   const ext = extname(filePath).toLowerCase();
 
   // Dockerfile.dev, Dockerfile.prod, etc. — common variant form.
-  if (base === 'Dockerfile' || base.startsWith('Dockerfile.')) return 'dockerfile';
+  if (base === 'Dockerfile' || (base.startsWith('Dockerfile.') && !base.endsWith('.dockerignore'))) return 'dockerfile';
 
   // Dotfile names like .env, .env.local — path.extname returns '' for
   // single-segment dotfiles (e.g. '.env') and the SECOND segment for
@@ -394,7 +394,7 @@ export function detectCategory(filePath, language) {
   // Jenkinsfile, docker-compose.*, Procfile, Vagrantfile, .gitlab-ci.yml,
   // .dockerignore.
   if (INFRA_FILENAMES.has(base)) return 'infra';
-  if (base === 'Dockerfile' || base.startsWith('Dockerfile.')) return 'infra';
+  if (language === 'dockerfile' || base.startsWith('Dockerfile.')) return 'infra';
   if (base.startsWith('docker-compose.')) return 'infra';
   if (base === 'compose.yml' || base === 'compose.yaml') return 'infra';
 
@@ -824,7 +824,7 @@ async function main() {
       continue;
     }
     updateContentDigest(contentHash, rel, scanned.bytes);
-    const contentHead = scanned.bytes[0] === 0x23 && scanned.bytes[1] === 0x21
+    const contentHead = (scanned.bytes[0] === 0x23 && scanned.bytes[1] === 0x21) || /^Dockerfile[-_]/.test(basename(rel))
       ? scanned.bytes.toString('utf8', 0, 256) : undefined;
     const language = detectLanguage(rel, contentHead);
     fileEntries.push({
