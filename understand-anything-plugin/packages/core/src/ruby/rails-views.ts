@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { safeRubySourcePath, type RubyDependencyResolver } from "./resolver.js";
+import { templatePartials } from "./template-partials.js";
 import type { DependencyFact } from "./types.js";
 
 const CONTROLLER = /^app\/controllers\/((?:[a-z0-9_]+\/)*[a-z0-9_]+)_controller\.rb$/;
@@ -38,6 +40,11 @@ function lookupOverridden(body: RubyAstNode): boolean {
   return overridden;
 }
 
+function partialKey(name: string): string {
+  const slash = name.lastIndexOf("/") + 1;
+  return name.slice(0, slash) + "_" + name.slice(slash);
+}
+
 function renderPath(node: RubyAstNode, controller: string): { name: string; key: string } | null {
   const call = rubyCall(node);
   if (!call || call.method !== "render" || call.receiver || call.block || call.args.length !== 1) return null;
@@ -60,8 +67,7 @@ function renderPath(node: RubyAstNode, controller: string): { name: string; key:
   }
   if (typeof name !== "string" || !VIEW_NAME.test(name)) return null;
   const key = name.includes("/") ? name : `${controller}/${name}`;
-  const slash = key.lastIndexOf("/") + 1;
-  return { name, key: partial ? key.slice(0, slash) + "_" + key.slice(slash) : key };
+  return { name, key: partial ? partialKey(key) : key };
 }
 
 interface Controller {
@@ -73,11 +79,12 @@ interface Controller {
  * All candidate formats count toward ambiguity, including unsupported ones. */
 export class RailsViewResolver {
   private readonly templates = new Map<string, string | null>();
+  private readonly viewSources = new Map<string, string>();
   private readonly controllers = new Map<string, Controller | null>();
 
   constructor(views: string[], projectRoot: string, private readonly resolver: RubyDependencyResolver,
     private readonly plugin: TreeSitterPlugin) {
-    if (!views.length) return;
+    if (!views.length || !resolver.isRails || resolver.inferenceBlocked) return;
     const root = join(projectRoot, "app/views");
     try {
       if (safeRubySourcePath(projectRoot, "app/views") !== root) return;
@@ -87,11 +94,17 @@ export class RailsViewResolver {
       if (!match) continue;
       const [, key, variant, suffix] = match;
       let target = null;
-      if (!this.templates.has(key) && !variant && /^(?:html\.)?(?:erb|haml|slim)$/.test(suffix)) {
+      if (!variant && /^(?:html\.)?(?:erb|haml|slim)$/.test(suffix)) {
         try {
-          safeRubySourcePath(root, path.slice("app/views/".length));
-          target = path;
-        } catch { /* An unavailable or escaping template cannot supply an endpoint. */ }
+          const sourcePath = safeRubySourcePath(root, path.slice("app/views/".length));
+          if (sourcePath === join(projectRoot, path)) {
+            const source = readFileSync(sourcePath, "utf8");
+            if (source.includes("render")) this.viewSources.set(path, source);
+            if (!this.templates.has(key)) target = path;
+          }
+        } catch (error) {
+          resolver.failures.push({path, stage: "view-file-read", message: error instanceof Error ? error.message : String(error)});
+        }
       }
       this.templates.set(key, target);
     }
@@ -137,7 +150,16 @@ export class RailsViewResolver {
   }
 
   dependencies(path: string): DependencyFact[] {
-    if (!this.templates.size || !this.resolver.isRails || this.resolver.inferenceBlocked || !CONTROLLER.test(path)) return [];
+    const source = this.viewSources.get(path);
+    if (source !== undefined) {
+      const facts = new Map<string, DependencyFact>();
+      for (const {name, line} of templatePartials(this.plugin, path, source)) {
+        const target = this.templates.get(partialKey(name));
+        if (target && target !== path) facts.set(line + ":" + name, {type: "depends_on", kind: "render", target, reference: name, line});
+      }
+      return [...facts.values()];
+    }
+    if (!this.templates.size || !CONTROLLER.test(path)) return [];
     const controller = this.controller(path);
     if (!controller?.facts.length) return [];
     let parent = controller.parent;

@@ -83,6 +83,7 @@ export class RubyWorkspaceDependencyResolver {
       const context = {prefix, resolver, views};
       this.projects.push(context);
       for (const {path} of inventory) this.owners.set(prefix + path, context);
+      for (const path of viewPaths.get(prefix) ?? []) this.owners.set(prefix + path, context);
       for (const [path, source] of resolver.sources) this.sources.set(prefix + path, source);
       this.failures.push(...resolver.failures.map(failure => ({...failure, path: failure.path === null ? null : prefix + failure.path})));
       if (resolver.isRails && resolver.inferenceBlocked) {

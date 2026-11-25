@@ -2059,7 +2059,7 @@ async function main() {
   const dependencyMap = {};
   for (const file of [...analysisFiles].sort((a, b) => comparePaths(a.path, b.path))) {
     const path = toPosix(file.path);
-    dependencyMap[path] = file.language === 'ruby' || (file.fileCategory === 'code' && path.endsWith('.rb'))
+    dependencyMap[path] = file.language === 'ruby' || (file.fileCategory === 'code' && path.endsWith('.rb')) || path.includes('app/views/')
       ? rubyResolver?.getDependencies(path) ?? []
       : [];
   }
