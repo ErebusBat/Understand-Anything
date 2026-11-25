@@ -18,5 +18,7 @@ publish-local:
         subprocess.run(['tar', '-xf', archive, '-C', snapshot], check=True)
         destination.mkdir(parents=True, exist_ok=True)
         subprocess.run(['rsync', '-a', '--delete', f'{snapshot}/', destination], check=True)
-    subprocess.run(['pnpm', 'install', '--frozen-lockfile'], cwd=destination / 'understand-anything-plugin', check=True)
+    plugin = destination / 'understand-anything-plugin'
+    subprocess.run(['pnpm', 'install', '--frozen-lockfile'], cwd=plugin, check=True)
+    subprocess.run(['pnpm', '--filter', '@understand-anything/core', 'build'], cwd=plugin, check=True)
     print(f'Published to {destination}')
