@@ -34,7 +34,7 @@
  *     stats: { filesScanned, filesWithImports, totalEdges },
  *     importMap: { <path>: [<resolvedPath>, ...], ... },
  *     dependencyMap: { <path>: [{ target, type, kind, reference?, line? }, ...] },
- *     dependencyDiagnostics: [{ path, code, message, line? }, ...],
+ *     dependencyDiagnostics: [{ path, code, message, line?, candidateTarget? }, ...],
  *     dependencyContexts: [{ root, isRails, blocked }, ...],
  *     dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION
  *   }

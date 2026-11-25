@@ -185,7 +185,7 @@ Copy `importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`
 
 Each `dependencyMap[sourceFilePath]` value is an array of `{ target: string, type: "depends_on" | "inherits" | "routes", kind: string, reference?: string, line?: number }`. Fact kinds include `constant`, `superclass`, `include`, `extend`, `association`, `route`, and `render`. These are file-level relationships. The core constant `RUBY_DEPENDENCY_RESOLVER_VERSION` supplies `dependencyResolverVersion`.
 
-`dependencyDiagnostics` contains `{ path: string | null, code: string, message: string, line?: number }` records for unsupported or ambiguous static resolution. Preserve these separately from extraction infrastructure failures and surface their limitations in the scan summary. An unresolved diagnostic is not permission to invent a dependency. Arbitrary Ruby, dynamic configuration/associations, and the complete route DSL are outside this resolver's scope.
+`dependencyDiagnostics` contains `{ path: string | null, code: string, message: string, line?: number, candidateTarget?: string }` records for unsupported or ambiguous static resolution. A `candidateTarget` identifies a file to inspect when ancestry makes a qualified mixin ambiguous. Keep it in the diagnostic. Preserve diagnostics separately from extraction infrastructure failures and surface their limitations in the scan summary. Arbitrary Ruby, dynamic configuration/associations, and the complete route DSL are outside this resolver's scope.
 
 Report the count, path, and stage of any entries in the extractor’s `failures` array. Report each blocked application root from `dependencyContexts` as incomplete.
 
