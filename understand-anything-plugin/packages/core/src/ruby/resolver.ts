@@ -3,7 +3,7 @@ import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubySelfSingletonClass, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { classicRailsMajor, detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
-import { grapeMountArguments } from "./grape-mounts.js";
+import { grapeDependencyArguments } from "./grape-api.js";
 import { publicSingletonMethods } from "./singleton-methods.js";
 import { RubyTestSuites } from "./spec-registry.js";
 import { DEFAULT_RUBY_MIXIN_RESOLUTION, type DependencyDiagnostic, type DependencyFact, type RubyDependencyFailure, type RubyInventoryFile, type RubyMixinResolution } from "./types.js";
@@ -290,7 +290,7 @@ export class RubyDependencyResolver {
         if (uncertain) this.addDiagnostic({path, code: "unsupported_declaration_scope", line: declaration.line, message: `Relative qualified declaration ${raw} inside another namespace is unsupported`});
         const body = node.childForFieldName("body");
         if (body && !declaration.conditional && declaration.superclass?.replace(/^::/, "") === "Grape::API") {
-          for (const argument of grapeMountArguments(body)) reference(argument, [name, ...nesting], "route", name);
+          for (const {node, kind} of grapeDependencyArguments(body)) reference(node, [name, ...nesting], kind, name);
         }
         if (body && !declaration.conditional) declaration.singletonMethods = publicSingletonMethods(body);
         if (body && path.startsWith("app/jobs/")) declaration.performsJob = declaresJobEntryPoint(body, declaration.kind);
@@ -906,13 +906,16 @@ export class RubyDependencyResolver {
     if (cached) return cached;
     const found: DependencyFact[] = this.inferenceBlocked ? [] : this.specRegistry.dependencies(path, this.applicationRootKnown);
     for (const ref of this.facts.get(path)?.references ?? []) {
-      if (ref.kind === "route") {
+      if (ref.kind === "route" || ref.kind === "grape_helper") {
         if (!ref.owner || !this.grapeEndpoint(ref.owner, path)) continue;
         const match = this.lookupConstant(ref.reference, {path, line: ref.line, nesting: ref.nesting, macroTarget: "grape"}, this.mixinResolution);
         if (!match || match.target === path) continue;
         const name = this.lexicalName(ref.reference, ref.nesting);
-        if (this.grapeEndpoint(name, match.target)) found.push({...match, kind: "route", type: "routes",
-          reference: "mount " + ref.reference, line: ref.line});
+        if (ref.kind === "route" && this.grapeEndpoint(name, match.target)) {
+          found.push({...match, kind: ref.kind, type: "routes", reference: "mount " + ref.reference, line: ref.line});
+        } else if (ref.kind === "grape_helper" && this.declarations.get(name)?.every(d => d.kind === "module")) {
+          found.push({...match, kind: ref.kind, type: "depends_on", reference: "helpers " + ref.reference, line: ref.line});
+        }
         continue;
       }
       if (ref.kind === "validator") {

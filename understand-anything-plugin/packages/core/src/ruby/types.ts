@@ -4,7 +4,7 @@ export const RUBY_DEPENDENCY_RESOLVER_VERSION = 7;
 export interface DependencyFact {
   target: string;
   type: "depends_on" | "inherits" | "routes";
-  kind: "constant" | "superclass" | "include" | "extend" | "association" | "route" | "render" | "layout"
+  kind: "constant" | "superclass" | "include" | "extend" | "association" | "route" | "render" | "layout" | "grape_helper"
     | "rspec_shared_group" | "factory" | "serializer" | "validator" | "file_read" | "resque_schedule";
   reference?: string;
   line?: number;

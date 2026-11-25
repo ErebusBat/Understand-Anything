@@ -89,9 +89,11 @@ describe("bounded Rails dependency resolver", () => {
           end
           def helper; mount V1::Orders; end
           helpers { mount V1::Orders }
+          helpers V1::Formatting, ::V1::NotAnApi
         end
       end`,
       "app/api/v1/orders.rb": "module V1; class Orders < Grape::API; end; end",
+      "app/api/v1/formatting.rb": "module V1::Formatting; end",
       "app/api/v1/absolute.rb": "class V1::Absolute < ::Grape::API; end",
       "app/api/v1/not_an_api.rb": "class V1::NotAnApi; end",
       "app/api/other.rb": "class Other; mount ::V1::Orders; end",
@@ -104,6 +106,8 @@ describe("bounded Rails dependency resolver", () => {
     expect(targets(resolver, "app/api/other.rb", "route")).toEqual([]);
     const strict = createRubyDependencyResolver({projectRoot:root, files:inventory, plugin, mixinResolution:"strict"});
     expect(routes(strict)).toEqual([routes(resolver)[0]]);
+    expect(targets(resolver, "app/api/v1/root.rb", "grape_helper")).toEqual(["app/api/v1/formatting.rb"]);
+    expect(targets(strict, "app/api/v1/root.rb", "grape_helper")).toEqual([]);
   });
 
   it("finds conventional models/controllers, nested concerns, superclass and distinct include/extend", () => {
