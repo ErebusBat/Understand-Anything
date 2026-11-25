@@ -903,6 +903,20 @@ describe("bounded Rails dependency resolver", () => {
     ]);
   });
 
+  it("keeps model and lexical dependencies on an association with a literal scope lambda", () => {
+    const {resolver} = setup({
+      "app/models/person.rb": "class Person < ApplicationRecord; end",
+      "app/services/rules.rb": "class Rules; end",
+      "app/models/group.rb": `class Group < ApplicationRecord
+        has_many :active_people, -> (group) { where(role: Rules.for(group)) }, class_name: "Person"
+        belongs_to :person, -> { active }
+        belongs_to :other, -> { active }, polymorphic: true
+      end`,
+    });
+    expect(targets(resolver, "app/models/group.rb", "association")).toEqual(["app/models/person.rb", "app/models/person.rb"]);
+    expect(targets(resolver, "app/models/group.rb", "constant")).toContain("app/services/rules.rb");
+  });
+
   it("rejects polymorphic, through, dynamic options/scopes and arbitrary DSL methods", () => {
     const {resolver} = setup({
       "app/models/person.rb":"class Person < ApplicationRecord; end",
@@ -910,7 +924,7 @@ describe("bounded Rails dependency resolver", () => {
         belongs_to :person, polymorphic: true
         has_many :people, through: :links, class_name: 'Person'
         has_many :people, class_name: target_name
-        has_many :people, -> { active }
+        has_many :people, computed_scope
         has_many :people, **options
         has_many dynamic_name
         has_many :people if enabled?

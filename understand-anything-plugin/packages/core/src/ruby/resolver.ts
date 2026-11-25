@@ -368,7 +368,11 @@ export class RubyDependencyResolver {
         if (typeof name === "string") reflections.set(name, null);
         else this.dynamicReflections.add(owner.name);
         let classNameCall: Reference["classNameCall"];
-        const options = rubyOptions(call.args.slice(1), (key, value) => {
+        // Rails stores this lambda as the reflection scope. The model class
+        // still comes from the association name or class_name option.
+        const scope = call.args[1]?.type === "lambda" ? call.args[1] : undefined;
+        if (scope) visit(scope, nesting, owner, true, conditional);
+        const options = rubyOptions(call.args.slice(scope ? 2 : 1), (key, value) => {
           if (key === "class_name") {
             const selector = rubyCall(value);
             const receiver = rubyConstant(selector?.receiver);
