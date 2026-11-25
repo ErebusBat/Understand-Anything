@@ -5,6 +5,18 @@ export function rubyStatements(node: RubyAstNode | null | undefined): RubyAstNod
   return node?.namedChildren.filter(child => child.type !== "comment") ?? [];
 }
 
+export function rubySelfSingletonClass(node: RubyAstNode | null | undefined): boolean {
+  return node?.type === "singleton_class" && node.childForFieldName("value")?.type === "self";
+}
+
+/** "class << self; def foo" and "def self.foo" have the same receiver. */
+export function rubyMethodName(node: RubyAstNode): string | null {
+  const name = node.childForFieldName("name")?.text;
+  if (!name) return null;
+  const singletonBody = node.parent?.type === "body_statement" && rubySelfSingletonClass(node.parent.parent);
+  return node.type === "singleton_method" || singletonBody ? `self.${name}` : name;
+}
+
 /** Return false from visit to skip descendants. Nodes are valid only inside
  * TreeSitterPlugin.withSyntaxTree's callback. */
 export function walkRuby(node: RubyAstNode, visit: (node: RubyAstNode) => void | boolean): void {

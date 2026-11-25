@@ -1,4 +1,5 @@
 import type { StructuralAnalysis } from "../types.js";
+import { rubyMethodName, rubySelfSingletonClass } from "../ruby/ast.js";
 import { COVERAGE_LANGUAGES, declarationGap } from "./symbol-coverage.js";
 import type { TreeSitterNode as Node } from "./extractors/types.js";
 import { classExpression, declarationKey, declarationName, identifier, literal, unescaped, unwrap } from "./symbol-ast.js";
@@ -100,7 +101,10 @@ export function collectSymbolEvidence(root: Node, structure: StructuralAnalysis,
     const gap = declarationGap(node, owner, scopes.receiver(node));
     if (gap) coverage.gaps.push(gap);
     const declared = declarationKey(node);
-    const declaredName = declared?.type === "computed_property_name" ? literal(declared.namedChildren[0]) : declarationName(declared);
+    let declaredName = declared?.type === "computed_property_name" ? literal(declared.namedChildren[0]) : declarationName(declared);
+    if (declaredName !== null && isRuby && node.type === "method" && rubySelfSingletonClass(node.parent?.parent)) {
+      declaredName = rubyMethodName(node);
+    }
     const objectMethod = isJS && node.type === "method_definition" && node.parent?.type === "object";
     const localDeclaration = owner.kind === "local";
     if (node !== root && CLASS_NODES.has(node.type)) {

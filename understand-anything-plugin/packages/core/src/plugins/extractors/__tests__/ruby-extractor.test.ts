@@ -369,6 +369,41 @@ end`);
       } finally { tree.delete(); parser.delete(); }
     });
 
+    it("names direct methods in concern singleton classes and keeps their source receivers", () => {
+      const { tree, parser, root } = parse(`module Auditing
+  extend ActiveSupport::Concern
+  included do
+    class << self
+      alias_method :previous, :write
+      def write(id); store(id); end
+    end
+    class << another_receiver
+      def other; end
+    end
+  end
+  class_methods do
+    class << self
+      def factory; allocate(); end
+    end
+  end
+end`);
+      try {
+        const structure = extractor.extractStructure(root);
+        expect(structure.functions).toEqual([
+          { name: "self.write", owner: null, lineRange: [6, 6], params: ["id"] },
+          { name: "self.factory", owner: "Auditing::ClassMethods", lineRange: [14, 14], params: [] },
+        ]);
+        expect(extractor.extractCallGraph(root)).toEqual([
+          { caller: "self.write", callee: "store", lineNumber: 6 },
+          { caller: "self.factory", callee: "allocate", lineNumber: 14 },
+        ]);
+        const evidence = collectSymbolEvidence(root, structure, "ruby");
+        expect(evidence.coverage.gaps).toContainEqual(expect.objectContaining({ name: "self.write", scope: { kind: "unknown" } }));
+        expect(evidence.coverage.gaps).toContainEqual(expect.objectContaining({ name: "other", scope: { kind: "unknown" } }));
+        expect(evidence.coverage.gaps.some(gap => gap.name === "write" || gap.name === "factory")).toBe(false);
+      } finally { tree.delete(); parser.delete(); }
+    });
+
     it("treats modules as classes", () => {
       const { tree, parser, root } = parse(`
 module Helpers

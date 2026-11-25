@@ -2,7 +2,7 @@ import type { StructuralAnalysis, CallGraphEntry } from "../../types.js";
 import type { LanguageExtractor, TreeSitterNode } from "./types.js";
 import { findChild } from "./base-extractor.js";
 import { nestedRubyClassName } from "../symbol-ast.js";
-import { rubyCall, rubyConstant, rubyStatements } from "../../ruby/ast.js";
+import { rubyCall, rubyConstant, rubyMethodName, rubySelfSingletonClass, rubyStatements } from "../../ruby/ast.js";
 
 /**
  * Set of method names that Ruby uses for imports.
@@ -167,16 +167,10 @@ export class RubyExtractor implements LanguageExtractor {
       let pushedName = false;
 
       // Track entering method definitions
-      if (node.type === "method") {
-        const nameNode = node.childForFieldName("name");
-        if (nameNode) {
-          functionStack.push(nameNode.text);
-          pushedName = true;
-        }
-      } else if (node.type === "singleton_method") {
-        const nameNode = node.childForFieldName("name");
-        if (nameNode) {
-          functionStack.push("self." + nameNode.text);
+      if (node.type === "method" || node.type === "singleton_method") {
+        const name = rubyMethodName(node);
+        if (name) {
+          functionStack.push(name);
           pushedName = true;
         }
       }
@@ -250,14 +244,14 @@ export class RubyExtractor implements LanguageExtractor {
     functions: StructuralAnalysis["functions"],
     owner?: string | null,
   ): void {
-    const nameNode = node.childForFieldName("name");
-    if (!nameNode) return;
+    const name = rubyMethodName(node);
+    if (!name) return;
 
     const paramsNode = node.childForFieldName("parameters");
     const params = extractParams(paramsNode ?? null);
 
     functions.push({
-      name: node.type === "singleton_method" ? "self." + nameNode.text : nameNode.text,
+      name,
       lineRange: [
         node.startPosition.row + 1,
         node.endPosition.row + 1,
@@ -321,7 +315,11 @@ export class RubyExtractor implements LanguageExtractor {
           // concern's ClassMethods module. Neither defines methods on the concern itself.
           const owner = call.method === "class_methods" ? name + "::ClassMethods" : null;
           for (const definition of rubyStatements(call.block.childForFieldName("body"))) {
-            if (definition.type === "method" || (definition.type === "singleton_method"
+            if (rubySelfSingletonClass(definition)) {
+              for (const method of rubyStatements(definition.childForFieldName("body"))) {
+                if (method.type === "method") this.extractMethod(method, functions, owner);
+              }
+            } else if (definition.type === "method" || (definition.type === "singleton_method"
               && definition.childForFieldName("object")?.type === "self")) {
               this.extractMethod(definition, functions, owner);
             }
