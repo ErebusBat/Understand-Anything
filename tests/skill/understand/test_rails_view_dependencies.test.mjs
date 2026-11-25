@@ -109,3 +109,30 @@ it('checks abstract ancestors and follows the declared respond_to HTML handler',
     {target: 'app/views/layouts/base.html.haml', type: 'depends_on', kind: 'layout', reference: 'base', line: 4},
   ]);
 });
+
+it('marks only public, empty actions with a unique conventional view as inferred renders', () => {
+  const controller = 'app/controllers/orders_controller.rb';
+  const names = ['index', 'edit', 'create', 'form', 'hidden', 'show', 'update'];
+  const templates = Object.fromEntries(names.map(name => [`app/views/orders/${name}.html.haml`, '']));
+  const facts = scan({
+    'config/application.rb': application, ...templates, 'app/views/orders/edit.json.erb': '{}',
+    [controller]: [
+      'class OrdersController < ActionController::Base', 'def index', '  # implicit render', 'end',
+      'def edit; end', 'def create; head :ok; end', 'def form(order); end',
+      'def hidden; end', 'private :hidden', 'protected', 'def show; end', 'private', 'def update; end', 'end',
+    ].join('\n'),
+  }, [controller]);
+  expect(facts[controller].filter(f => f.kind === 'render')).toEqual([
+    {type: 'depends_on', kind: 'render', reference: 'index', line: 2, resolution: 'inferred', target: 'app/views/orders/index.html.haml'},
+  ]);
+});
+
+it('skips default rendering when a local ancestor overrides it', () => {
+  const controller = 'app/controllers/items_controller.rb';
+  const facts = scan({
+    'config/application.rb': application, 'app/views/items/new.html.erb': '',
+    [controller]: 'class ItemsController < ApplicationController; def new; end; end',
+    'app/controllers/application_controller.rb': 'class ApplicationController < ActionController::Base; def default_render; head :ok; end; end',
+  }, [controller]);
+  expect(facts[controller].filter(f => f.kind === 'render')).toEqual([]);
+});

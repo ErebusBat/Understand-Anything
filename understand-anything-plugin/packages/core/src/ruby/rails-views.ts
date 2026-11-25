@@ -9,8 +9,9 @@ import type { DependencyFact } from "./types.js";
 const CONTROLLER = /^app\/controllers\/((?:[a-z0-9_]+\/)*[a-z0-9_]+)_controller\.rb$/;
 const CONTROLLER_CLASS = /^app\/controllers\/((?:[a-z0-9_]+\/)*[a-z0-9_]+)\.rb$/;
 const VIEW_NAME = /^(?:[a-z0-9_-]+\/)*[a-z0-9_-]+$/;
+const DEFAULT_RENDER_METHODS = new Set(["default_render", "send_action", "process_action", "action_methods", "method_for_action"]);
 const LOOKUP_METHODS = new Set(["render", "render_to_body", "find_template", "lookup_context", "view_paths",
-  "layout", "_layout", "_normalize_layout", "_layout_for_option", "controller_path", "_prefixes", "local_prefixes", "prepend_view_path", "append_view_path"]);
+  "layout", "_layout", "_normalize_layout", "_layout_for_option", "respond_to", "controller_path", "_prefixes", "local_prefixes", "prepend_view_path", "append_view_path"]);
 
 function findClass(body: RubyAstNode | null, expected: string, prefix = ""): RubyAstNode | null {
   for (const node of rubyStatements(body)) {
@@ -27,13 +28,13 @@ function findClass(body: RubyAstNode | null, expected: string, prefix = ""): Rub
   return null;
 }
 
-function lookupOverridden(body: RubyAstNode): boolean {
+function lookupOverridden(body: RubyAstNode, methods = LOOKUP_METHODS): boolean {
   let overridden = false;
   walkRuby(body, node => {
     if (overridden || node.type === "class" || node.type === "module") return false;
     if (node.type === "method" || node.type === "singleton_method") {
-      overridden = LOOKUP_METHODS.has(node.childForFieldName("name")?.text ?? "");
-    } else if (node.type === "call") {
+      overridden = methods.has(node.childForFieldName("name")?.text ?? "");
+    } else if (methods === LOOKUP_METHODS && node.type === "call") {
       const method = node.childForFieldName("method")?.text;
       if (method === "prepend_view_path" || method === "append_view_path" || method === "view_paths") overridden = true;
     }
@@ -71,6 +72,36 @@ function renderPath(node: RubyAstNode, controller: string): { name: string; key:
   return { name, key: partial ? partialKey(key) : key };
 }
 
+/** Direct empty instance methods may fall through to Rails' default render.
+ * Visibility setters with dynamic names and action-hiding macros can change
+ * which methods Rails exposes, so they must be accounted for first. */
+function emptyActions(statements: RubyAstNode[]): RubyAstNode[] {
+  const actions = new Map<string, RubyAstNode>();
+  const hidden = new Set<string>();
+  let publicVisibility = true;
+  for (const statement of statements) {
+    if (["public", "protected", "private"].includes(statement.text)) {
+      publicVisibility = statement.text === "public";
+      continue;
+    }
+    const call = rubyCall(statement);
+    if (call && !call.receiver && ["private", "protected", "hide_action", "remove_method", "undef_method"].includes(call.method)) {
+      for (const arg of call.args) {
+        const name = arg.type === "method" ? arg.childForFieldName("name")?.text : rubyLiteral(arg);
+        if (typeof name !== "string") return [];
+        hidden.add(name);
+      }
+    }
+    if (statement.type !== "method") continue;
+    const name = statement.childForFieldName("name")?.text;
+    if (!name) continue;
+    actions.delete(name);
+    if (publicVisibility && /^[a-z][a-z0-9_]*$/.test(name) && !rubyStatements(statement.childForFieldName("parameters")).length
+        && !rubyStatements(statement.childForFieldName("body")).length) actions.set(name, statement);
+  }
+  return [...actions].filter(([name]) => !hidden.has(name)).map(([, node]) => node);
+}
+
 function layoutPath(node: RubyAstNode): { name: string; key: string } | null {
   const call = rubyCall(node);
   if (!call || call.receiver || call.block) return null;
@@ -98,6 +129,7 @@ function layoutPath(node: RubyAstNode): { name: string; key: string } | null {
 interface Controller {
   parent: string | null;
   facts: DependencyFact[];
+  overridesDefaultRender: boolean;
 }
 
 /** Resolve only explicit controller renders backed by a single selected view.
@@ -161,8 +193,17 @@ export class RailsViewResolver {
       };
       // An abstract ancestor can live in a conventionally named Ruby file
       // without the controller suffix. Only its lookup behavior is needed.
-      if (!controllerPath) return {parent: parent ?? null, facts: []};
       const statements = rubyStatements(body);
+      const overridesDefaultRender = !!body && lookupOverridden(body, DEFAULT_RENDER_METHODS);
+      if (!controllerPath) return {parent: parent ?? null, facts: [], overridesDefaultRender};
+      for (const action of emptyActions(statements)) {
+        const name = action.childForFieldName("name")!.text;
+        const target = this.templates.get(controllerPath + "/" + name);
+        if (!target) continue;
+        const fact: DependencyFact = {type: "depends_on", kind: "render", target, reference: name,
+          line: action.startPosition.row + 1, resolution: "inferred"};
+        facts.set(JSON.stringify(fact), fact);
+      }
       const layouts = statements.filter(statement => rubyCall(statement)?.method === "layout");
       if (layouts.length === 1) add("layout", layoutPath(layouts[0]), layouts[0]);
       for (const method of statements) {
@@ -180,6 +221,7 @@ export class RailsViewResolver {
             const params = rubyStatements(call.block.childForFieldName("parameters"));
             const collector = params.length === 1 && params[0].type === "identifier" && params[0].text;
             for (const child of rubyStatements(call.block.childForFieldName("body"))) {
+              if (child.type === "assignment" || child.type === "operator_assignment") break;
               const handler = rubyCall(child);
               if (handler?.method !== "html" || handler.receiver?.type !== "identifier" || handler.receiver.text !== collector
                 || handler.args.length || handler.block?.childForFieldName("parameters")) continue;
@@ -195,7 +237,7 @@ export class RailsViewResolver {
         };
         walkRuby(methodBody, collect);
       }
-      return { parent: parent ?? null, facts: [...facts.values()] };
+      return {parent: parent ?? null, facts: [...facts.values()], overridesDefaultRender};
     });
     this.controllers.set(path, result);
     return result;
@@ -215,14 +257,16 @@ export class RailsViewResolver {
     const controller = this.controller(path);
     if (!controller?.facts.length) return [];
     let parent = controller.parent;
+    let overridesDefaultRender = controller.overridesDefaultRender;
     const seen = new Set([path]);
     while (parent) {
       if (seen.has(parent)) return [];
       seen.add(parent);
       const ancestor = this.controller(parent);
       if (!ancestor) return [];
+      overridesDefaultRender ||= ancestor.overridesDefaultRender;
       parent = ancestor.parent;
     }
-    return controller.facts;
+    return overridesDefaultRender ? controller.facts.filter(fact => !fact.resolution) : controller.facts;
   }
 }
