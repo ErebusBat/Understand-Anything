@@ -4,7 +4,8 @@ export const RUBY_DEPENDENCY_RESOLVER_VERSION = 6;
 export interface DependencyFact {
   target: string;
   type: "depends_on" | "inherits" | "routes";
-  kind: "constant" | "superclass" | "include" | "extend" | "association" | "route" | "render";
+  kind: "constant" | "superclass" | "include" | "extend" | "association" | "route" | "render" | "layout"
+    | "rspec_shared_group" | "factory";
   reference?: string;
   line?: number;
   /** A qualified mixin matched a local module across uninspected ancestry. */
