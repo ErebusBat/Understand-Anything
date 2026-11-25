@@ -999,6 +999,23 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics.map(d=>d.code)).toContain("unsupported_ancestor_lookup");
   });
 
+  it("keeps Active Record model identity across guarded and unconditional initializer patches", () => {
+    const files = {
+      "config/initializers/uuid.rb": "unless enabled?; class ActiveRecord::Base; def self.by_uuid; end; end; end",
+      "config/initializers/extensions.rb": "class ActiveRecord::Base; User = OtherUser; end",
+      "app/models/user.rb": "class User < ApplicationRecord; end",
+      "app/models/report.rb": "class Report < ApplicationRecord; belongs_to :user; User.find; end",
+    };
+    const {resolver} = setup(files);
+    expect(targets(resolver, "app/models/report.rb", "association")).toEqual(["app/models/user.rb"]);
+    expect(targets(resolver, "app/models/report.rb", "constant")).toEqual([]);
+    expect(resolver.resolveConstant("ActiveRecord::Base")).toBeNull();
+    for (const replacement of ["ActiveRecord::Base = OtherBase", "class ActiveRecord::Base < OtherBase; end"]) {
+      const conflicting = setup({...files, "config/initializers/replacement.rb": replacement}).resolver;
+      expect(targets(conflicting, "app/models/report.rb", "association")).toEqual([]);
+    }
+  });
+
   it("does not mistake a lexically shadowed ActiveRecord namespace for the framework", () => {
     const {resolver} = setup({
       "app/models/admin/active_record/base.rb":"module Admin; module ActiveRecord; class Base; def self.belongs_to(*args); end; end; end; end",

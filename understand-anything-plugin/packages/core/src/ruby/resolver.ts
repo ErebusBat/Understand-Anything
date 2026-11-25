@@ -498,6 +498,11 @@ export class RubyDependencyResolver {
         this.blocked.add(name); // The assignment identifies the file, independently of its runtime value or type.
         continue;
       }
+      // Rails has already defined ActiveRecord::Base when initializers run.
+      // Class bodies without a superclass reopen that same object, including
+      // guarded patches. Keep their children and mixins in the ancestor index.
+      if (name === "ActiveRecord::Base" && !owners && definitions.every(d =>
+        d.kind === "class" && !d.superclass && this.initializerPaths.has(d.path))) continue;
       // A child file can open its parent class just to declare the nested
       // class/module. Keep the canonical class's superclass and model identity.
       if (this.bindings.has(name) && definitions.length > 1 && definitions.every(d => d.kind === "class" && !d.conditional)) {
