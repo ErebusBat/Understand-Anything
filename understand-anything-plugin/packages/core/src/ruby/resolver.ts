@@ -3,6 +3,7 @@ import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubySelfSingletonClass, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { classicRailsMajor, detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
+import { publicSingletonMethods } from "./singleton-methods.js";
 import { RubySpecRegistry } from "./spec-registry.js";
 import { DEFAULT_RUBY_MIXIN_RESOLUTION, type DependencyDiagnostic, type DependencyFact, type RubyDependencyFailure, type RubyInventoryFile, type RubyMixinResolution } from "./types.js";
 
@@ -17,6 +18,7 @@ interface Declaration {
   conditional: boolean;
   wrapsDeclarations?: boolean;
   performsJob?: boolean;
+  singletonMethods?: Set<string>;
   valueAssignment?: "name" | "qualified";
 }
 interface Reference {
@@ -27,6 +29,7 @@ interface Reference {
   line: number;
   owner?: string;
   mixinOffset?: number;
+  receiverCall?: {method: string; offset: number};
   reflection?: {name: string; macro: string; path: string};
   through?: {join: string; sources: string[]; override?: string};
 }
@@ -34,6 +37,7 @@ interface RubyFileFacts {
   declarations: Declaration[];
   references: Reference[];
   requiredFiles: {path: string; end: number}[];
+  uninspectedLoadOffset?: number;
 }
 
 export interface RubyDependencyResolverOptions {
@@ -54,6 +58,7 @@ export interface RubyResolveOptions {
   valueRead?: boolean;
   mixin?: boolean;
   mixinOffset?: number;
+  receiverCall?: Reference["receiverCall"];
 }
 
 const ASSOCIATIONS = new Set(["belongs_to", "has_one", "has_many", "has_and_belongs_to_many"]);
@@ -236,6 +241,16 @@ export class RubyDependencyResolver {
     const result: RubyFileFacts = {declarations: [], references: [], requiredFiles: []};
     for (const statement of rubyStatements(root)) {
       const call = rubyCall(statement);
+      // Only literal require_relative providers are indexed below. A different
+      // preceding local or calculated load can introduce an unindexed shadow.
+      if (call && (!call.receiver || rubyConstant(call.receiver)?.replace(/^::/, "") === "Kernel")
+        && ["require", "load", "require_relative"].includes(call.method)) {
+        const value = rubyLiteral(call.args[0]);
+        const local = typeof value === "string" && [value, "lib/" + value, "app/" + value].some(probe =>
+          this.sources.has(probe.endsWith(".rb") ? probe : probe + ".rb"));
+        if (call.method === "load" || typeof value !== "string" || call.method === "require" && local
+          || call.method === "require_relative" && call.receiver) result.uninspectedLoadOffset ??= statement.endIndex;
+      }
       if (call?.method !== "require_relative" || call.receiver || call.block || call.args.length !== 1 || call.args[0].type !== "string") continue;
       const source = rubyLiteral(call.args[0]);
       if (typeof source !== "string" || !source || source.startsWith("/") || /^[a-z]:/i.test(source) || source.includes("\\")) continue;
@@ -245,7 +260,9 @@ export class RubyDependencyResolver {
     }
     const reference = (node: RubyAstNode, nesting: string[], kind: Reference["kind"], owner?: string) => {
       const name = rubyConstant(node);
+      const call = kind === "constant" ? rubyCall(node.parent) : null;
       if (name) result.references.push({
+        ...(call?.receiver?.id === node.id ? {receiverCall: {method: call.method, offset: node.startIndex}} : {}),
         reference: name, nesting: [...nesting], kind, line: node.startPosition.row + 1, owner,
         ...(kind === "include" || kind === "extend" ? {mixinOffset: node.startIndex} : {}),
       });
@@ -267,6 +284,7 @@ export class RubyDependencyResolver {
         result.declarations.push(declaration);
         if (uncertain) this.addDiagnostic({path, code: "unsupported_declaration_scope", line: declaration.line, message: `Relative qualified declaration ${raw} inside another namespace is unsupported`});
         const body = node.childForFieldName("body");
+        if (body && !declaration.conditional) declaration.singletonMethods = publicSingletonMethods(body);
         if (body && path.startsWith("app/jobs/")) declaration.performsJob = declaresJobEntryPoint(body, declaration.kind);
         if (body && declaration.kind === "class" && !superclass) {
           const statements = rubyStatements(body);
@@ -593,6 +611,33 @@ export class RubyDependencyResolver {
     return this.lookupConstant(reference, options, "strict")?.target ?? null;
   }
 
+  /** A singleton method corroborates an otherwise uncertain receiver constant.
+   * Its spelling must identify the exact declared provider in the autoload
+   * index; a similarly named method on another constant supplies no evidence. */
+  private inferredReceiver(reference: string, options: RubyResolveOptions): ConstantMatch | null {
+    const call = options.receiverCall, scope = options.nesting?.[0];
+    if (!scope || !call || !options.path || DEVISE_NAMESPACE.test(reference)) return null;
+    const definitions = this.declarations.get(reference);
+    if (definitions?.length !== 1 || !definitions[0].singletonMethods?.has(call.method)) return null;
+    const target = definitions[0].path;
+    if (target === options.path || !this.bindings.get(reference)?.has(target)) return null;
+
+    const first = reference.split("::")[0];
+    const facts = this.facts.get(options.path);
+    if (facts?.uninspectedLoadOffset !== undefined && facts.uninspectedLoadOffset <= call.offset) return null;
+    const loaded = (facts?.requiredFiles ?? [])
+      .filter(load => load.end <= call.offset).flatMap(load => this.facts.get(load.path)?.declarations ?? []);
+    const locals = this.localsWithLoads(this.consumerDeclarations.get(options.path), loaded);
+    if (options.nesting?.some(name => locals?.has(name + "::" + first))
+      || this.exact(reference, options, undefined, locals)?.target !== target) return null;
+    // The original lookup can stop at its first unknown ancestor. Inspect
+    // the other branches for a matching inherited constant before inferring.
+    const uninspected = new Set<string>();
+    if (this.ancestorLookup(scope, first, new Set(), locals, uninspected) !== "unknown" || !uninspected.size
+      || [...uninspected].some(base => base === "<dynamic>" || DEVISE_NAMESPACE.test(base))) return null;
+    return {target, resolution: "inferred"};
+  }
+
   private lookupConstant(reference: string, options: RubyResolveOptions, mixinResolution: RubyMixinResolution): ConstantMatch | null {
     if (!this.isRails || this.inferenceBlocked || !/^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*$/.test(reference)) return null;
     let locals = options.path ? this.consumerDeclarations.get(options.path) : undefined;
@@ -632,6 +677,10 @@ export class RubyDependencyResolver {
     const uninspected = qualifiedMixin || options.macroTarget ? new Set<string>() : undefined;
     const ancestry = nesting[0] ? this.ancestorLookup(nesting[0], first, new Set(), locals, uninspected, required?.declaration) : "clear";
     if (ancestry !== "clear") {
+      if (ancestry === "unknown" && options.receiverCall && mixinResolution === "pragmatic") {
+        const candidate = this.inferredReceiver(reference, options);
+        if (candidate) return candidate;
+      }
       // Literal serializers still name a Ruby constant. When the sole unknown
       // base is the gem serializer, keep the unique local candidate as inferred.
       if (ancestry === "unknown" && options.macroTarget && uninspected?.size
@@ -789,10 +838,11 @@ export class RubyDependencyResolver {
       const match = this.lookupConstant(ref.reference, {
         nesting: ref.nesting, path, line: ref.line, association: ref.kind === "association",
         macroTarget: ref.kind === "serializer" || ref.kind === "validator" ? ref.kind : undefined,
-        valueRead: ref.kind === "constant", mixin: ref.kind === "include" || ref.kind === "extend", mixinOffset: ref.mixinOffset,
+        valueRead: ref.kind === "constant", receiverCall: ref.receiverCall, mixin: ref.kind === "include" || ref.kind === "extend", mixinOffset: ref.mixinOffset,
       }, this.mixinResolution);
       if (!match || match.target === path) continue;
-      found.push({...match, type:ref.kind === "superclass" ? "inherits" : "depends_on", kind:ref.kind, reference:ref.displayReference ?? ref.reference, line:ref.line});
+      const display = match.resolution && ref.receiverCall ? ref.reference + "." + ref.receiverCall.method : ref.displayReference ?? ref.reference;
+      found.push({...match, type:ref.kind === "superclass" ? "inherits" : "depends_on", kind:ref.kind, reference:display, line:ref.line});
     }
     const unique = [...new Map(found.map(f => [JSON.stringify(f),f])).values()].sort((a,b) => compare(a.target,b.target) || compare(a.type,b.type) || compare(a.kind,b.kind) || compare(a.reference ?? "",b.reference ?? "") || (a.line ?? 0) - (b.line ?? 0));
     this.dependencyCache.set(path, unique);

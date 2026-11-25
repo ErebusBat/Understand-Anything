@@ -813,6 +813,64 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics.map(d=>d.code)).toContain("unsupported_constant_expression");
   });
 
+  describe("ordinary calls on local singleton-method providers", () => {
+    const target = "app/services/billing/ledger.rb";
+    const provider = `module Billing
+      class Ledger
+        def self.reconcile!; end
+        def stale; end
+        if feature?; def self.optional; end; end
+        class << self
+          def total; end
+          private
+          def hidden; end
+        end
+        def self.secret; end
+        private_class_method :secret
+      end
+    end`;
+    const path = "app/services/reporter.rb";
+    it("records the selector only on inferred reads and retains strict and absolute lookup", () => {
+      const {root, inventory, resolver} = setup({[target]: provider,
+        [path]: `class Reporter < External
+          Billing::Ledger.reconcile!
+          Billing::Ledger.total
+          ::Billing::Ledger.reconcile!
+          Billing::Ledger.hidden
+          Billing::Ledger.secret
+          Billing::Ledger.optional
+          Billing::Ledger.stale
+          Billing::Ledger
+          Other.total
+        end`,
+      });
+      const exact = {target, type: "depends_on", kind: "constant", line: 4, reference: "::Billing::Ledger"};
+      expect(resolver.getDependencies(path)).toEqual([exact,
+        {target, type: "depends_on", kind: "constant", line: 2, reference: "Billing::Ledger.reconcile!", resolution: "inferred"},
+        {target, type: "depends_on", kind: "constant", line: 3, reference: "Billing::Ledger.total", resolution: "inferred"}]);
+      const strict = createRubyDependencyResolver({projectRoot: root, files: inventory, plugin, mixinResolution: "strict"});
+      expect(strict.getDependencies(path)).toEqual([exact]);
+    });
+
+    it("rejects competing bindings, literal load shadows, inherited shadows, dynamic ancestry and Devise", () => {
+      for (const [base, body, files] of [
+        ["External", "Billing = Shadow", {}],
+        ["External", "include Shadow", {"app/models/shadow.rb": "module Shadow; module Billing; end; end"}],
+        ["External", "include chosen_mixin", {}],
+        ["Devise::Base", "", {}],
+        ["External", "", {"app/models/billing/ledger.rb": provider}],
+        ["External", "", {"spec/shadow.rb": "class Reporter; module Billing; end; end"}],
+        ["External", "", {"lib/patch.rb": "class Reporter; module Billing; end; end"}],
+      ] as const) {
+        const load = Object.hasOwn(files, "spec/shadow.rb") ? "require_relative '../../spec/shadow'\n"
+          : Object.hasOwn(files, "lib/patch.rb") ? "require 'patch'\n" : "";
+        const {resolver} = setup({[target]: provider, ...files,
+          [path]: `${load}class Reporter < ${base}; ${body}; Billing::Ledger.total; end`});
+        expect(resolver.getDependencies(path).filter(f => f.target === target)).toEqual([]);
+      }
+    });
+  });
+
   it("reports unknown ancestor lookup instead of fabricating a top-level fallback", () => {
     const {resolver} = setup({"app/models/user.rb":"class User; end","app/services/probe.rb":"class Probe < UnknownExternal; User.find; ::User.find; end"});
     expect(resolver.getDependencies("app/services/probe.rb")).toEqual([expect.objectContaining({reference:"::User",target:"app/models/user.rb"})]);
