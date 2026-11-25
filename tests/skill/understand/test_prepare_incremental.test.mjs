@@ -251,6 +251,82 @@ afterEach(async () => {
   await new Promise(resolve => setImmediate(resolve));
 });
 
+describe('seeding a worktree graph', { timeout: 30_000 }, () => {
+  const script = join(repoRoot, 'scripts', 'worktrees', 'seed-graph.mjs');
+  function scratch() {
+    const path = mkdtempSync(join(tmpdir(), 'ua seed '));
+    roots.push(path);
+    return path;
+  }
+  function seed(target, source) {
+    return run(process.execPath, [script, target, ...(source ? [source] : [])], target).stdout;
+  }
+
+  it('reuses a legacy graph at HEAD and analyzes just the new branch file in a bare-backed worktree', () => {
+    const { root, baseCommit } = setupRepository({
+      '.gitignore': '# No project-level graph exclusions\n',
+      'src/a.ts': 'export const a = 1;\n',
+      'src/b.ts': 'export const b = 1;\n',
+    });
+    const archive = join(root, '.understand-anything');
+    renameSync(join(root, '.ua'), archive);
+    const parent = scratch();
+    const store = join(parent, 'store.git');
+    const main = join(parent, 'master checkout');
+    const branch = join(parent, 'feature checkout');
+    git(root, ['clone', '--bare', root, store]);
+    git(store, ['worktree', 'add', main, 'main']);
+    git(store, ['worktree', 'add', '-b', 'feature', branch, 'main']);
+    seed(main, archive);
+    const original = readFileSync(join(main, '.ua', 'knowledge-graph.json'), 'utf8');
+    expect(seed(join(branch, 'src'))).toContain('exact HEAD');
+    expect(prepare(branch, baseCommit).plan.action).toBe('SKIP');
+    expect(git(branch, ['status', '--porcelain'])).toBe('');
+
+    writeProjectFile(branch, 'src/new.ts', 'export const fresh = 3;\n');
+    git(branch, ['add', '-A']);
+    git(branch, ['-c', 'user.name=Test', '-c', 'user.email=t@t', 'commit', '-m', 'feature']);
+    const ahead = join(parent, 'ahead');
+    git(store, ['worktree', 'add', '--detach', ahead, 'feature']);
+    expect(seed(ahead)).toContain('1 commit(s) behind HEAD');
+    expect(JSON.parse(readFileSync(join(ahead, '.ua/meta.json'), 'utf8')).gitCommitHash).toBe(baseCommit);
+    expect(existsSync(join(ahead, '.ua/intermediate/incremental-plan.json'))).toBe(false);
+    expect(prepare(ahead, baseCommit).plan).toMatchObject({
+      action: 'PARTIAL_UPDATE', filesToReanalyze: ['src/new.ts'],
+    });
+    writeFileSync(join(ahead, '.ua/knowledge-graph.json'), 'local edit');
+    expect(seed(ahead)).toContain('Skipping seed');
+    expect(readFileSync(join(ahead, '.ua/knowledge-graph.json'), 'utf8')).toBe('local edit');
+    expect(readFileSync(join(main, '.ua/knowledge-graph.json'), 'utf8')).toBe(original);
+    expect(readFileSync(join(branch, '.ua/knowledge-graph.json'), 'utf8')).toBe(original);
+  });
+
+  it('rejects mismatched and divergent graphs and falls back to a usable ancestor', () => {
+    const { root, baseCommit } = setupRepository({ 'src/a.ts': 'export const a = 1;\n' });
+    const parent = scratch();
+    const sibling = join(parent, 'other');
+    const target = join(parent, 'target');
+    git(root, ['worktree', 'add', '-b', 'other', sibling]);
+    writeProjectFile(sibling, 'src/b.ts', 'export const b = 2;\n');
+    const newer = commit(sibling, 'second commit');
+    buildBaseline(sibling, newer);
+    git(root, ['worktree', 'add', '--detach', target, newer]);
+    expect(seed(target)).toContain('exact HEAD');
+    rmSync(join(target, '.ua'), { recursive: true });
+    const source = join(sibling, '.ua');
+    writeFileSync(join(source, 'fingerprints.json'), JSON.stringify({ files: {}, gitCommitHash: baseCommit }));
+    expect(() => seed(target, source)).toThrow(/mismatched fingerprints/);
+    expect(existsSync(join(target, '.ua'))).toBe(false);
+    expect(seed(target)).toContain('1 commit(s) behind HEAD');
+    rmSync(join(target, '.ua'), { recursive: true });
+    git(target, ['switch', '--detach', baseCommit]);
+    expect(() => seed(target, source)).toThrow(/not a known ancestor/);
+    rmSync(join(root, '.ua'), { recursive: true });
+    expect(seed(target)).toContain('No reusable graph');
+    expect(existsSync(join(target, '.ua'))).toBe(false);
+  });
+});
+
 describe('typed dependency incremental contracts', () => {
   const files = ['app/models/person.rb', 'app/services/report.rb', 'src/extra.js']
     .map(path => ({ path, language: path.endsWith('.rb') ? 'ruby' : 'javascript' }));
