@@ -1,7 +1,7 @@
 ---
 name: understand
 description: Analyze a codebase to produce an interactive knowledge graph for understanding architecture, components, and relationships
-argument-hint: ["[path] [--full|--auto-update|--no-auto-update|--review|--language <lang>|--exclude <patterns>]"]
+argument-hint: ["[path] [--full|--auto-update|--no-auto-update|--review|--language <lang>|--ruby-mixin-resolution <mode>|--exclude <patterns>]"]
 ---
 
 # /understand
@@ -16,6 +16,7 @@ Analyze the current codebase and produce a `knowledge-graph.json` file in the pr
   - `--no-auto-update` — Disable automatic graph updates (writes `autoUpdate: false` to `$UA_DIR/config.json`)
   - `--review` — Run full LLM graph-reviewer instead of inline deterministic validation
   - `--language <lang>` — Generate all textual content (summaries, descriptions, tags, titles, languageNotes, languageLesson) in the specified language. Accepts ISO 639-1 codes (`zh`, `ja`, `ko`, `en`, `es`, `fr`, `de`, etc.) or friendly names (`chinese`, `japanese`, `korean`, `english`, `spanish`, etc.). Locale variants supported: `zh-TW`, `zh-HK`, etc. Defaults to `en` (English). Stores preference in `$UA_DIR/config.json` for consistency across incremental updates.
+  - `--ruby-mixin-resolution <mode>` — Set the project’s Ruby mixin lookup to `pragmatic` (default) or `strict`. Pragmatic mode records an inferred edge for a unique qualified module when external ancestry leaves the match uncertain. Unresolved Devise ancestry keeps its candidate diagnostic in both modes. Strict mode keeps all such candidates in diagnostics.
   - `--exclude <patterns>` — Comma-separated glob patterns for additional files/directories to exclude from analysis (e.g., `--exclude "tests/*,docs/*"`). These patterns take highest priority over built-in defaults and `.understandignore` rules. Supports gitignore syntax including `!` negation.
   - A directory path (e.g. `/path/to/repo` or `../other-project`) — Analyze the given directory instead of the current working directory
 
@@ -45,7 +46,7 @@ Throughout execution, report progress to the user at each phase transition and d
 Determine whether to run a full analysis or incremental update.
 
 1. **Resolve `PROJECT_ROOT`:**
-   - Parse `$ARGUMENTS` for a non-flag token (any argument that does not start with `--`). If found, treat it as the target directory path.
+   - Consume the values of `--language`, `--ruby-mixin-resolution`, and `--exclude` with their flags. Use the remaining positional argument as the target directory path.
      - If the path is relative, resolve it against the current working directory.
      - Verify the resolved path exists and is a directory (run `test -d <path>`). If it does not exist or is not a directory, report an error to the user and **STOP**.
      - Set `PROJECT_ROOT` to the resolved absolute path.
@@ -146,8 +147,8 @@ Determine whether to run a full analysis or incremental update.
    find "$UA_DIR/" -maxdepth 1 -type d -name '.trash-*' -mtime +7 -exec rm -rf {} + 2>/dev/null || true
    ```
 3.5. **Auto-update configuration:**
-    - If `--auto-update` is in `$ARGUMENTS`: write `{"autoUpdate": true}` to `$UA_DIR/config.json`
-    - If `--no-auto-update` is in `$ARGUMENTS`: write `{"autoUpdate": false}` to `$UA_DIR/config.json`
+    - If `--auto-update` is in `$ARGUMENTS`: merge `{"autoUpdate": true}` into `$UA_DIR/config.json`
+    - If `--no-auto-update` is in `$ARGUMENTS`: merge `{"autoUpdate": false}` into `$UA_DIR/config.json`
     - These flags only set the config — analysis proceeds normally regardless.
 
  3.6. **Language configuration:**
@@ -159,7 +160,7 @@ Determine whether to run a full analysis or incremental update.
       - **Stored preference wins.** If `$UA_DIR/config.json` has an `outputLanguage` field, set `$OUTPUT_LANGUAGE` to it and skip the rest.
       - **Otherwise detect (first run only).** Infer the predominant language of the user's conversation as an ISO 639-1 code (`$DETECTED_LANG`). If it is `en` or cannot be confidently determined, set `$OUTPUT_LANGUAGE=en` and proceed silently — no prompt (English users see no change).
       - **If `$DETECTED_LANG` ≠ `en`, confirm once before analyzing:** tell the user you detected `<language>` and ask whether to generate all content in it; they press Enter/"yes" to accept, or type another language code/name to override (normalize via the friendly-name map above). If running non-interactively (no reply possible), skip the wait, use `$DETECTED_LANG`, and print a one-line notice instead of blocking.
-      - **Persist** the resolved `$OUTPUT_LANGUAGE` (including `en`) into `config.json` so it never re-prompts for this project.
+      - **Persist** the resolved `$OUTPUT_LANGUAGE` (including `en`) by merging the `outputLanguage` field into `$UA_DIR/config.json` so it never re-prompts for this project.
     - If `--language` IS specified:
       - Update `$UA_DIR/config.json` with the new language: merge `{"outputLanguage": "<lang>"}` into existing config.
       - Store as `$OUTPUT_LANGUAGE` for use throughout all phases.
@@ -168,7 +169,9 @@ Determine whether to run a full analysis or incremental update.
       > **Language directive**: Generate all textual content (summaries, descriptions, tags, titles, languageNotes, languageLesson) in **{language}**. Maintain technical accuracy while using natural, native-level phrasing in the target language. Keep technical terms in English when no standard translation exists (e.g., "middleware", "hook", "barrel").
       ```
 
- 3.7. **Exclude patterns:**
+ 3.7. **Ruby mixin resolution.** When `--ruby-mixin-resolution` is present, accept exactly `pragmatic` or `strict` and merge the value into `$UA_DIR/config.json` as `rubyMixinResolution`. For a missing or invalid value, report the accepted modes and stop. With the flag omitted, use the stored preference or the default `pragmatic`.
+
+ 3.8. **Exclude patterns:**
     - Parse `$ARGUMENTS` for `--exclude <patterns>` flag. If found, extract the comma-separated patterns string.
     - Split on commas, trim whitespace from each pattern, and filter out empty entries.
     - Store the patterns as `$EXCLUDE_PATTERNS` (comma-joined for passing to downstream scripts: `"tests/*,docs/*"`).
@@ -191,7 +194,7 @@ Determine whether to run a full analysis or incremental update.
    | `--full` flag in `$ARGUMENTS` | Full analysis (all phases) |
    | No existing graph or meta | Full analysis (all phases) |
    | Existing graph + explicit `--exclude` | Run deterministic incremental preparation even when the commit hash is unchanged, so the new inventory rules take effect immediately |
-   | Existing graph or saved scan contains Ruby files | Run deterministic incremental preparation even when the commit hash is unchanged, so resolver-version changes and missing dependency baselines are checked before any current-graph shortcut |
+   | Existing graph or saved scan contains Ruby files | Run deterministic incremental preparation even when the commit hash is unchanged, so mode changes, resolver-version changes and missing dependency baselines are checked before any current-graph shortcut |
    | `--review` flag + existing graph + unchanged commit hash | Skip to Phase 6 (review-only — reuse existing assembled graph) |
    | Existing graph + unchanged commit hash | Ask the user: "The graph is up to date at this commit. Would you like to: **(a)** run a full rebuild (`--full`), **(b)** run the LLM graph reviewer (`--review`), or **(c)** do nothing?" Then follow their choice. If they pick (c), STOP. |
    | Existing graph + changed files | Run deterministic incremental preparation below |
@@ -301,9 +304,9 @@ After the subagent completes, read `$UA_DIR/intermediate/scan-result.json` to ge
 - Typed dependencies (`dependencyMap`): resolved file facts with `target`, `type`, `kind`, and optional `reference`/`line`; kept separate from explicit imports
 - `dependencyContexts` records each Ruby application root and whether dependency inference was blocked.
 - `dependencyDiagnostics`: unsupported and ambiguous static-resolution cases, separate from extraction infrastructure failures
-- `dependencyResolverVersion`: copied from the extractor
+- `rubyMixinResolution` and `dependencyResolverVersion`: copied from the extractor
 
-Preserve both maps, application contexts, diagnostics, and resolver version in `scan-result.json`; the batching helper reads this contract directly. Surface dependency diagnostic counts and limitations in the final report without converting them into guessed edges.
+Preserve both maps, application contexts, diagnostics, mixin mode, and resolver version in `scan-result.json`. Keep `resolution: "inferred"` on every fact that carries it. Surface dependency diagnostic counts and limitations in the final report without converting them into guessed edges.
 Store the file list as `$FILE_LIST` with `fileCategory` metadata for use in Phase 2 batch construction.
 
 **Gate check:** If >100 files, inform the user and suggest scoping with a subdirectory argument. Proceed only if user confirms or add guidance that this may take a while.

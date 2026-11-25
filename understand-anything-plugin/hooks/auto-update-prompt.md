@@ -13,7 +13,7 @@ Incrementally update the knowledge graph after a commit. Do not ask the user for
    ```
 
 2. Require `$UA_DIR/knowledge-graph.json` and `$UA_DIR/meta.json`. If either is missing, report that `/understand` must create a baseline and **STOP**.
-3. Read `gitCommitHash` from meta as `$LAST_COMMIT_HASH`; get `$HEAD_COMMIT` with `git rev-parse HEAD`. Even when they match, continue through preparation so resolver-version changes and missing dependency baselines are checked. The helper's `SKIP` action controls the current-graph exit.
+3. Read `gitCommitHash` from meta as `$LAST_COMMIT_HASH`; get `$HEAD_COMMIT` with `git rev-parse HEAD`. Even when they match, continue through preparation so mode changes, resolver-version changes and missing dependency baselines are checked. The helper's `SKIP` action controls the current-graph exit.
 4. Resolve `$PLUGIN_ROOT` from `$CLAUDE_PLUGIN_ROOT`, then `$DEVIN_PLUGIN_ROOT`, then the parent of the `hooks/` directory containing this prompt file (the path the hook told you to read — this covers Devin plugin installs, whose agent shell has no plugin-root variable), then `$HOME/.understand-anything-plugin`, validating that it contains `skills/understand/prepare-incremental.mjs`. If it cannot be found, report the error and **STOP** without changing metadata.
 5. Ensure core is built, then run the bundled helper with parameterized arguments:
 
@@ -23,7 +23,7 @@ Incrementally update the knowledge graph after a commit. Do not ask the user for
      "$LAST_COMMIT_HASH"
    ```
 
-   The helper is authoritative for `git diff --name-status -z`, renames, spaces, POSIX normalization, the current scan/ignore rules, structural fingerprints, generated artifacts, and refresh/pruning of explicit imports and typed dependencies. Preserve `dependencyMap`, `dependencyDiagnostics`, and `dependencyResolverVersion` in its scan result. A resolver-version upgrade or Ruby context change can require `PARTIAL_UPDATE` with no analyzer files; still run merge to recover refreshed facts. Do not recreate or post-filter its decisions.
+   The helper is authoritative for `git diff --name-status -z`, renames, spaces, POSIX normalization, the current scan/ignore rules, structural fingerprints, generated artifacts, and refresh/pruning of explicit imports and typed dependencies. Preserve `rubyMixinResolution`, `dependencyMap`, `dependencyDiagnostics`, and `dependencyResolverVersion` in its scan result. A resolver-version upgrade or Ruby context change can require `PARTIAL_UPDATE` with no analyzer files; still run merge to recover refreshed facts. Do not recreate or post-filter its decisions.
 6. Read `$UA_DIR/intermediate/incremental-plan.json`.
 
    | Action | Required behavior |

@@ -177,13 +177,14 @@ The output JSON has shape:
   },
   "dependencyContexts": [],
   "dependencyDiagnostics": [],
-  "dependencyResolverVersion": 6
+  "dependencyResolverVersion": 6,
+  "rubyMixinResolution": "pragmatic"
 }
 ```
 
-Copy `importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, and `dependencyResolverVersion` verbatim into the final scan-result.json under the same keys. Both maps use the same project-relative file paths and have entries for every input file; arrays may be empty. `importMap` contains explicit resolved internal imports only. Keep typed facts separate.
+Copy `importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, and `rubyMixinResolution` verbatim into the final scan-result.json under the same keys. Both maps use the same project-relative file paths and have entries for every input file; arrays may be empty. `importMap` contains explicit resolved internal imports only. Keep typed facts separate.
 
-Each `dependencyMap[sourceFilePath]` value is an array of `{ target: string, type: "depends_on" | "inherits" | "routes", kind: string, reference?: string, line?: number }`. Fact kinds include `constant`, `superclass`, `include`, `extend`, `association`, `route`, and `render`. These are file-level relationships. The core constant `RUBY_DEPENDENCY_RESOLVER_VERSION` supplies `dependencyResolverVersion`.
+Each `dependencyMap[sourceFilePath]` value is an array of `{ target: string, type: "depends_on" | "inherits" | "routes", kind: string, reference?: string, line?: number, resolution?: "inferred" }`. Fact kinds include `constant`, `superclass`, `include`, `extend`, `association`, `route`, and `render`. For a pragmatic mixin match, preserve the extractor’s `resolution: "inferred"` evidence. These are file-level relationships. The core constant `RUBY_DEPENDENCY_RESOLVER_VERSION` supplies `dependencyResolverVersion`.
 
 `dependencyDiagnostics` contains `{ path: string | null, code: string, message: string, line?: number, candidateTarget?: string }` records for unsupported or ambiguous static resolution. A `candidateTarget` identifies a file to inspect when ancestry makes a qualified mixin ambiguous. Keep it in the diagnostic. Preserve diagnostics separately from extraction infrastructure failures and surface their limitations in the scan summary. Arbitrary Ruby, dynamic configuration/associations, and the complete route DSL are outside this resolver's scope.
 
@@ -199,12 +200,12 @@ Report the count, path, and stage of any entries in the extractor’s `failures`
 
 After Steps A + B + C have all completed, read:
 1. `$UA_DIR/tmp/ua-scan-files.json` — output of `scan-project.mjs` (file list with language, sizeLines, fileCategory; plus `totalFiles`, `filteredByIgnore`, `estimatedComplexity`).
-2. `$UA_DIR/tmp/ua-import-map-output.json` — output of `extract-import-map.mjs` (`importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`).
+2. `$UA_DIR/tmp/ua-import-map-output.json` — output of `extract-import-map.mjs` (`importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, `rubyMixinResolution`).
 3. Your Step A in-memory notes (`name`, `rawDescription`, `readmeHead`, `frameworks`, `languages` narrative).
 
 Do NOT re-walk the file tree, re-count lines, or re-derive categories — trust `scan-project.mjs` entirely. Do NOT re-implement import resolution — trust `extract-import-map.mjs` entirely.
 
-**IMPORTANT:** The final output must NOT contain the `scriptCompleted` or `stats` fields from either bundled script, nor your transient `rawDescription` / `readmeHead` work-strings. Strip them when assembling the final JSON. The final `importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, and `dependencyResolverVersion` MUST equal their fields from `extract-import-map.mjs` verbatim (do not edit, re-sort, or filter them). The final `files` array MUST equal Step B's `files` array verbatim (do not re-order, drop, or augment it). Copy Step B's `contentDigest` into the final scan.
+**IMPORTANT:** The final output must NOT contain the `scriptCompleted` or `stats` fields from either bundled script, nor your transient `rawDescription` / `readmeHead` work-strings. Strip them when assembling the final JSON. The final `importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, and `rubyMixinResolution` MUST equal their fields from `extract-import-map.mjs` verbatim (do not edit, re-sort, or filter them). The final `files` array MUST equal Step B's `files` array verbatim (do not re-order, drop, or augment it). Copy Step B's `contentDigest` into the final scan.
 
 Your only synthesis task in this phase is the final `description` field:
 
@@ -237,7 +238,8 @@ Then assemble the final output JSON:
   },
   "dependencyContexts": [],
   "dependencyDiagnostics": [],
-  "dependencyResolverVersion": 6
+  "dependencyResolverVersion": 6,
+  "rubyMixinResolution": "pragmatic"
 }
 ```
 
@@ -255,6 +257,7 @@ Then assemble the final output JSON:
 - `dependencyContexts` (object[]): copy each application's `root`, `isRails`, and `blocked` status from Step C
 - `dependencyDiagnostics` (object[]): directly from Step C, including unsupported and ambiguous cases
 - `dependencyResolverVersion` (integer): directly from Step C
+- `rubyMixinResolution` (string) records the effective mode from Step C.
 
 ## Critical Constraints
 
