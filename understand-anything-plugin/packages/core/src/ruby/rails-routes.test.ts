@@ -40,31 +40,70 @@ describe("restricted Rails routes", () => {
     expect(result.dependencies.every(fact => fact.type === "routes" && fact.kind === "route" && fact.line)).toBe(true);
   });
 
-  it("rejects unsupported scopes, conditionals, overrides, filters, dynamic options, mounts and drawn files without flattening", () => {
+  it("rejects dynamic scopes, options and destinations without flattening", () => {
     const result = extract(`Rails.application.routes.draw do
       namespace :admin, module: dynamic do
         resources :people
       end
-      scope module: :admin do
+      scope module: dynamic do
         resources :people
       end
       if enabled?
         resources :people
       end
-      resources :people, only: :index
-      resources :people, controller: :people
+      resources :people, only: actions
+      resources :people, controller: dynamic
       resources name
       get '/people', to: "#{controller}#index"
       get '/people', to: 'people#index', constraints: allowed
-      get '/people' => 'people#index'
+      get '/people' => handler
       mount App => '/'
       draw :extra
-      root to: 'people#index'
+      root to: redirect('/')
     end`);
     expect(result.dependencies).toEqual([]);
     expect(result.references).toEqual([]);
     expect(result.diagnostics).toHaveLength(12);
     expect(result.diagnostics.every(d => d.code === "unsupported-route" && d.line)).toBe(true);
+  });
+
+  it("retains configuration guards and controller namespaces across literal route forms", () => {
+    const result = extract(`Rails.application.routes.draw do
+      if SiteOptions.routes.preview
+        scope '/v1', module: :admin do
+          resources :people, only: [] do
+            collection do
+              match '/find' => 'people#search', via: [:get, :post]
+            end
+            get :lookup, on: :member
+          end
+          root to: 'people#index'
+        end
+      else
+        resource :geocoder, :only => %i[show], :defaults => { :format => 'json' }
+      end
+    end`);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.dependencies.map(f => [f.reference, f.target])).toEqual([
+      ["people#search if SiteOptions.routes.preview", "app/controllers/admin/people_controller.rb"],
+      ["people#lookup if SiteOptions.routes.preview", "app/controllers/admin/people_controller.rb"],
+      ["people#index if SiteOptions.routes.preview", "app/controllers/admin/people_controller.rb"],
+      ["resource :geocoder unless SiteOptions.routes.preview", "app/controllers/geocoders_controller.rb"],
+    ]);
+  });
+
+  it("skips filtered actions and options that change the controller dynamically", () => {
+    const result = extract(`Rails.application.routes.draw do
+      resources :people, only: []
+      resource :person, only: :index
+      resources :people, defaults: {controller: 'other'}
+      match '/x' => 'people#show'
+      scope '/:controller' do
+        get '/show', to: 'people#show'
+      end
+    end`);
+    expect(result.dependencies).toEqual([]);
+    expect(result.diagnostics).toHaveLength(3);
   });
 
   it("preserves the controller module when a literal namespace changes its URL prefix", () => {

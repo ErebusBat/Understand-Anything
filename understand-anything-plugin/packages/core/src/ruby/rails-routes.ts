@@ -1,5 +1,5 @@
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
-import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubyStatements, type RubyAstNode } from "./ast.js";
+import { rubyCall, rubyConstant, rubyLiteral, rubyStatements, type RubyAstNode } from "./ast.js";
 import type { DependencyDiagnostic, DependencyFact } from "./types.js";
 
 interface RouteResolver {
@@ -28,21 +28,133 @@ function applicationClasses(body: RubyAstNode | null, namespace = ""): string[] 
   return names;
 }
 
-/** Traverse literal namespace blocks only. An unsupported scope can change
- * every controller beneath it, so reject the whole subtree at its source line. */
-function* routeStatements(body: RubyAstNode | null, prefix = ""): Generator<{ node: RubyAstNode; prefix: string }> {
+type Call = NonNullable<ReturnType<typeof rubyCall>>;
+interface RouteScope {
+  prefix: string;
+  resource?: string;
+  guards: string[];
+}
+interface RouteSite { node: RubyAstNode; controller: string; reference: string; guards: string[] }
+
+const ACTION = /^[a-z_]\w*[!?]?$/;
+const REST_ACTIONS = ["index", "show", "new", "create", "edit", "update", "destroy"];
+
+// Preserve value nodes: only a few nested options (e.g. defaults: {format: ...})
+// have known semantics. An unknown option may override the endpoint.
+function routeOptions(args: RubyAstNode[], allowed: string[]): Map<string, RubyAstNode> | null {
+  const options = new Map<string, RubyAstNode>();
+  for (const arg of args.flatMap(n => n.type === "hash" ? rubyStatements(n) : [n])) {
+    const keyNode = arg.childForFieldName("key");
+    const key = rubyLiteral(keyNode);
+    const value = arg.childForFieldName("value");
+    if (arg.type !== "pair" || !keyNode || !["hash_key_symbol", "simple_symbol"].includes(keyNode.type)
+      || typeof key !== "string" || !allowed.includes(key) || !value || options.has(key)) return null;
+    if (key === "defaults" || key === "constraints") {
+      const settings = value.type === "hash" && routeOptions(rubyStatements(value), ["format"]);
+      if (!settings) return null;
+    } else if (key === "only" || key === "except" || key === "via") {
+      if (!actionList(value)) return null;
+    } else if (typeof rubyLiteral(value) !== "string") return null;
+    options.set(key, value);
+  }
+  return options;
+}
+
+function actionList(node: RubyAstNode): string[] | null {
+  if (node.type === "symbol_array") {
+    const names = rubyStatements(node).map(n => n.type === "bare_symbol" && ACTION.test(n.text) ? n.text : null);
+    return names.every(n => n !== null) ? names as string[] : null;
+  }
+  const value = rubyLiteral(node);
+  const list = Array.isArray(value) ? value : [value];
+  return list.every(n => typeof n === "string" && ACTION.test(n)) ? list as string[] : null;
+}
+
+function httpDestination(call: Call, resource?: string): { controller: string; reference: string } | null {
+  const [first, ...rest] = call.args;
+  if (!first) return null;
+  const allowed = ["to", "as", "on", "constraints", "defaults", ...(call.method === "match" ? ["via"] : [])];
+  let destination;
+  let options;
+  if (first.type === "pair" && first.childForFieldName("key")?.type === "string") {
+    if (call.method === "root" || typeof rubyLiteral(first.childForFieldName("key")) !== "string") return null;
+    destination = rubyLiteral(first.childForFieldName("value"));
+    options = routeOptions(rest, allowed.filter(key => key !== "to"));
+  } else if (call.method === "root" && first.type === "pair") {
+    options = routeOptions(call.args, allowed);
+    destination = rubyLiteral(options?.get("to"));
+  } else {
+    const path = rubyLiteral(first);
+    if (typeof path !== "string") return null;
+    options = routeOptions(rest, allowed);
+    destination = options?.has("to") ? rubyLiteral(options.get("to")) : call.method === "root" ? path : undefined;
+    if (options && !options.has("to") && call.method !== "root" && resource && ACTION.test(path)) {
+      destination = resource + "#" + path;
+    }
+  }
+  if (!options || (call.method === "match" && !options.has("via")) || typeof destination !== "string") return null;
+  if (options.has("on") && (!resource || !["member", "collection", "new"].includes(String(rubyLiteral(options.get("on")))))) return null;
+  const parts = destination.split("#");
+  return parts.length === 2 && CONTROLLER_PATH.test(parts[0]) && ACTION.test(parts[1])
+    ? { controller: parts[0], reference: destination } : null;
+}
+
+function visitRoutes(body: RubyAstNode | null, scope: RouteScope, resolver: RouteResolver,
+  record: (site: RouteSite) => void, reject: (node: RubyAstNode, message: string) => void): void {
   for (const node of rubyStatements(body)) {
     const call = rubyCall(node);
-    if (call?.method === "namespace" && !call.receiver && call.block && !call.block.childForFieldName("parameters")) {
-      const name = rubyLiteral(call.args[0]);
-      const options = rubyOptions(call.args.slice(1));
-      if (typeof name === "string" && CONTROLLER_PATH.test(name) && options
-        && [...options].every(([key, value]) => ["path", "as"].includes(key) && typeof value === "string")) {
-        yield* routeStatements(call.block.childForFieldName("body"), prefix + name + "/");
+    const nested = call?.block?.childForFieldName("body");
+    const condition = node.childForFieldName("condition");
+    if ((node.type === "if" || node.type === "unless") && condition
+      && /^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*(?:\.[a-z_]\w*\??)+$/.test(condition.text)) {
+      visitRoutes(node.childForFieldName("consequence"), {...scope, guards: [...scope.guards, node.type + " " + condition.text]}, resolver, record, reject);
+      const alternative = node.childForFieldName("alternative");
+      if (alternative?.type === "else") {
+        const inverse = node.type === "if" ? "unless " : "if ";
+        visitRoutes(alternative, {...scope, guards: [...scope.guards, inverse + condition.text]}, resolver, record, reject);
+      } else if (alternative) reject(alternative, "Unsupported alternative route condition.");
+      continue;
+    }
+    if (call && !call.receiver && !call.block?.childForFieldName("parameters")) {
+      const [first, ...rest] = call.args;
+      const name = rubyLiteral(first);
+      if (nested && (call.method === "namespace" || call.method === "scope")) {
+        const takesPath = typeof name === "string";
+        const options = routeOptions(takesPath ? rest : call.args, ["path", "as", "module"]);
+        const mod = options?.has("module") ? rubyLiteral(options.get("module")) : call.method === "namespace" ? name : "";
+        const url = options?.has("path") ? rubyLiteral(options.get("path")) : name;
+        if (options && (takesPath || call.method === "scope") && typeof mod === "string" && (!mod || CONTROLLER_PATH.test(mod))
+          && !(typeof url === "string" && /:(?:controller|action)\b/.test(url))) {
+          visitRoutes(nested, {...scope, prefix: scope.prefix + (mod ? mod + "/" : "")}, resolver, record, reject);
+          continue;
+        }
+      } else if (nested && scope.resource && ["member", "collection", "new"].includes(call.method) && !call.args.length) {
+        visitRoutes(nested, scope, resolver, record, reject);
         continue;
+      } else if (call.method === "resources" || call.method === "resource") {
+        const options = routeOptions(rest, ["only", "except", "controller", "as", "path", "param", "defaults", "constraints"]);
+        if (typeof name === "string" && /^[a-z][a-z\d_]*$/.test(name) && options && !(options.has("only") && options.has("except"))) {
+          const controller = options.has("controller") ? rubyLiteral(options.get("controller"))
+            : call.method === "resource" ? resolver.pluralize(name) : name;
+          if (typeof controller === "string" && CONTROLLER_PATH.test(controller)) {
+            const only = options.get("only"), except = options.get("except");
+            const actions = REST_ACTIONS.filter(action => action !== "index" || call.method === "resources");
+            if (actions.some(action => (!only || actionList(only)!.includes(action)) && (!except || !actionList(except)!.includes(action)))) {
+              record({node, controller: scope.prefix + controller, reference: call.method + " :" + name, guards: scope.guards});
+            }
+            if (nested) visitRoutes(nested, {...scope, resource: controller}, resolver, record, reject);
+            continue;
+          }
+        }
+      } else if (!call.block && (HTTP_METHODS.has(call.method) || call.method === "root" || call.method === "match")) {
+        const destination = httpDestination(call, scope.resource);
+        if (destination) {
+          record({node, controller: scope.prefix + destination.controller, reference: destination.reference, guards: scope.guards});
+          continue;
+        }
       }
     }
-    yield { node, prefix };
+    reject(node, "Route scope or destination is outside the supported literal subset.");
   }
 }
 
@@ -82,55 +194,20 @@ export function extractRailsRouteDependencies({ path, source, applicationSource,
         reject(statement, "Expected a direct routes.draw block on Rails.application or the configured application class.");
         continue;
       }
-      for (const { node, prefix } of routeStatements(draw.block.childForFieldName("body"))) {
-        const call = rubyCall(node);
-        if (!call || call.receiver || call.block) {
-          reject(node, "Unsupported route scope, block, condition or receiver.");
-          continue;
-        }
-        let controller: string | null = null;
-        let reference: string | null = null;
-        if (HTTP_METHODS.has(call.method)) {
-          const routePath = rubyLiteral(call.args[0]);
-          const options = rubyOptions(call.args.slice(1));
-          const destination = options?.get("to");
-          if (typeof routePath !== "string" || call.args[0]?.type !== "string"
-            || options?.size !== 1 || typeof destination !== "string") {
-            reject(node, "HTTP routes require a literal path and only a literal to: 'controller#action' option.");
-            continue;
-          }
-          const parts = destination.split("#");
-          if (parts.length !== 2 || !CONTROLLER_PATH.test(parts[0]) || !/^[a-z_]\w*[!?]?$/.test(parts[1])) {
-            reject(node, "Route destination must name a literal controller path and action.");
-            continue;
-          }
-          controller = parts[0];
-          reference = destination;
-        } else if (call.method === "resource" || call.method === "resources") {
-          const name = rubyLiteral(call.args[0]);
-          if (call.args.length !== 1 || typeof name !== "string" || !/^[a-z][a-z\d_]*$/.test(name)) {
-            reject(node, "Resource declarations require one literal name and no options or block.");
-            continue;
-          }
-          controller = call.method === "resource" ? resolver.pluralize(name) : name;
-          reference = `${call.method} :${name}`;
-        } else {
-          reject(node, `Route DSL method ${call.method} is outside the supported subset.`);
-          continue;
-        }
-        const constant = controller && resolver.camelize(`${prefix}${controller}_controller`);
+      visitRoutes(draw.block.childForFieldName("body"), {prefix: "", guards: []}, resolver, ({node, controller, reference, guards}) => {
+        const constant = resolver.camelize(controller + "_controller");
         if (!constant) {
           reject(node, "Controller inflection could not be determined statically.");
-          continue;
+          return;
         }
         const line = node.startPosition.row + 1;
         const target = resolver.resolveConstant(`::${constant}`, { path, line });
         if (!target || !/(^|\/)app\/controllers\/.+\.rb$/.test(target)) {
           diagnostics.push({ path, line, code: "unresolved-route", message: `No unambiguous local controller file for ${constant}.` });
-          continue;
+          return;
         }
-        dependencies.push({ target, type: "routes", kind: "route", reference: reference!, line });
-      }
+        dependencies.push({ target, type: "routes", kind: "route", reference: [reference, ...guards].join(" "), line });
+      }, reject);
     }
   });
   return { dependencies, diagnostics };
