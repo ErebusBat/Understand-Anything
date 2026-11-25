@@ -9,7 +9,7 @@ import type { DependencyFact } from "./types.js";
 const CONTROLLER = /^app\/controllers\/((?:[a-z0-9_]+\/)*[a-z0-9_]+)_controller\.rb$/;
 const VIEW_NAME = /^(?:[a-z0-9_-]+\/)*[a-z0-9_-]+$/;
 const LOOKUP_METHODS = new Set(["render", "render_to_body", "find_template", "lookup_context", "view_paths",
-  "controller_path", "_prefixes", "local_prefixes", "prepend_view_path", "append_view_path"]);
+  "layout", "_layout", "_normalize_layout", "_layout_for_option", "controller_path", "_prefixes", "local_prefixes", "prepend_view_path", "append_view_path"]);
 
 function findClass(body: RubyAstNode | null, expected: string, prefix = ""): RubyAstNode | null {
   for (const node of rubyStatements(body)) {
@@ -70,6 +70,30 @@ function renderPath(node: RubyAstNode, controller: string): { name: string; key:
   return { name, key: partial ? partialKey(key) : key };
 }
 
+function layoutPath(node: RubyAstNode): { name: string; key: string } | null {
+  const call = rubyCall(node);
+  if (!call || call.receiver || call.block) return null;
+  let value: RubyAstNode | null = null;
+  if (call.method === "layout") {
+    const [first, ...rest] = call.args;
+    const options = rubyOptions(rest);
+    if (!options || [...options.keys()].some(key => key !== "only" && key !== "except")) return null;
+    value = first;
+  } else if (call.method === "render") {
+    // Partial layouts have their own (underscored) lookup. Restrict this to
+    // ordinary template/action renders with an explicit full layout.
+    const [first] = call.args;
+    const args = first && ["string", "simple_symbol"].includes(first.type) ? call.args.slice(1) : call.args;
+    const options = rubyOptions(args);
+    if (!options?.has("layout") || [...options.keys()].some(key => !["layout", "template", "action"].includes(key))) return null;
+    const pairs = args.flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg]);
+    value = pairs.find(arg => rubyLiteral(arg.childForFieldName("key")) === "layout")?.childForFieldName("value") ?? null;
+  }
+  const name = value?.type === "string" && rubyLiteral(value);
+  if (typeof name !== "string" || !VIEW_NAME.test(name)) return null;
+  return {name, key: /\blayouts\//.test(name) ? name : "layouts/" + name};
+}
+
 interface Controller {
   parent: string | null;
   facts: DependencyFact[];
@@ -126,20 +150,26 @@ export class RailsViewResolver {
         && fact.line === superclass.startPosition.row + 1 && fact.reference === baseName)?.target;
       if (!parent && baseName.replace(/^::/, "") !== "ActionController::Base") return null;
       const facts = new Map<string, DependencyFact>();
-      for (const method of rubyStatements(body)) {
+      const add = (kind: "layout" | "render", expression: ReturnType<typeof renderPath>, node: RubyAstNode) => {
+        if (!expression) return;
+        const target = this.templates.get(expression.key);
+        if (!target) return;
+        const fact: DependencyFact = {type: "depends_on", kind, target, reference: expression.name, line: node.startPosition.row + 1};
+        facts.set(JSON.stringify(fact), fact);
+      };
+      const statements = rubyStatements(body);
+      const layouts = statements.filter(statement => rubyCall(statement)?.method === "layout");
+      if (layouts.length === 1) add("layout", layoutPath(layouts[0]), layouts[0]);
+      for (const method of statements) {
         const methodBody = method.type === "method" && method.childForFieldName("body");
         if (!methodBody) continue;
         walkRuby(methodBody, statement => {
           // Blocks may change self or negotiate another format. Nested classes
           // and methods have their own receiver.
           if (["block", "do_block", "lambda", "class", "module", "singleton_class", "method", "singleton_method"].includes(statement.type)) return false;
-          const render = renderPath(statement, controllerPath);
-          if (!render) return;
-          const target = this.templates.get(render.key);
-          if (target) {
-            const line = statement.startPosition.row + 1;
-            const fact: DependencyFact = { type: "depends_on", kind: "render", target, reference: render.name, line };
-            facts.set(JSON.stringify(fact), fact);
+          if (rubyCall(statement)?.method === "render") {
+            add("layout", layoutPath(statement), statement);
+            add("render", renderPath(statement, controllerPath), statement);
           }
         });
       }

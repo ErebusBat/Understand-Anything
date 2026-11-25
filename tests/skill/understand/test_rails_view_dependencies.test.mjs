@@ -62,3 +62,33 @@ it('suppresses ambiguous partial formats and templates outside Rails', () => {
     ['other/' + source]: '<%= render "shared/row_V2" %>', ['other/' + partial]: '',
   }, [source, 'other/' + source])).toEqual({[source]: [], ['other/' + source]: []});
 });
+
+it('links literal class and action layouts to full templates with Rails layout prefixes', () => {
+  const base = 'app/controllers/application_controller.rb', controller = 'app/controllers/orders_controller.rb';
+  const sources = {
+    'config/application.rb': application,
+    [base]: 'class ApplicationController < ActionController::Base; end',
+    [controller]: [
+      'class OrdersController < ApplicationController', 'layout "orders", only: [:show]',
+      'def show', "render 'show', layout: 'shop/layouts/details'", 'render partial: "line", layout: "orders"',
+      'render layout: current_layout', 'render layout: :orders', 'render layout: "orders", variants: :phone',
+      'other.render layout: "orders"', 'end', 'end',
+    ].join('\n'),
+    'app/views/layouts/orders.html.erb': '', 'app/views/shop/layouts/details.html.haml': '',
+  };
+  expect(scan(sources, [controller])[controller].filter(f => f.kind === 'layout')).toEqual([
+    {target: 'app/views/layouts/orders.html.erb', type: 'depends_on', kind: 'layout', reference: 'orders', line: 2},
+    {target: 'app/views/shop/layouts/details.html.haml', type: 'depends_on', kind: 'layout', reference: 'shop/layouts/details', line: 4},
+  ]);
+});
+
+it('skips layout candidates when a controller ancestor overrides template lookup', () => {
+  const controller = 'app/controllers/orders_controller.rb';
+  const facts = scan({
+    'config/application.rb': application,
+    'app/controllers/application_controller.rb': 'class ApplicationController < ActionController::Base; prepend_view_path "themes"; end',
+    [controller]: 'class OrdersController < ApplicationController; layout "orders"; end',
+    'app/views/layouts/orders.html.erb': '',
+  }, [controller]);
+  expect(facts[controller].filter(f => f.kind === 'layout')).toEqual([]);
+});
