@@ -28,6 +28,8 @@ Constant lookup preserves actual Ruby lexical nesting, compact namespaces, and l
 
 An external ancestor can define the first name in a qualified `include` or `extend`. If its top-level spelling identifies one local module and the resolver finds no known shadow, the `unsupported_ancestor_lookup` diagnostic includes that file as `candidateTarget`. The diagnostic retains the source line for inspection. Confirmed mixins enter the dependency graph.
 
+A literal, top-level `require_relative` can also establish where a subsequent `include` or `extend` gets its module. The required file must be in the selected inventory and declare the named top-level module unconditionally. This evidence applies to the consumer that loads it, including when the provider's filename differs from its Rails autoload name.
+
 The Ruby structural extractor also reads method definitions in modules that directly extend `ActiveSupport::Concern`. It records the names, parameters, and source lines of methods defined directly inside `included` and `class_methods` blocks, including singleton methods written with `def self.name` or `class << self`. Methods in an `included` block carry `owner: null` because the host is selected at runtime. Methods in a `class_methods` block belong to the concern's `ClassMethods` module.
 
 Direct `belongs_to`, `has_one`, `has_many`, and `has_and_belongs_to_many` associations are recognized in model and concern contexts when their names/options and local model targets can be resolved. Collection naming uses singularization; explicit `class_name` uses model namespace lookup. Polymorphic `belongs_to`, `through`, dynamic options, callback simulation, and join-model inference are outside this subset.

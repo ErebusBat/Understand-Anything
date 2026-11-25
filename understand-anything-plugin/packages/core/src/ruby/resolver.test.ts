@@ -138,6 +138,59 @@ describe("bounded Rails dependency resolver", () => {
     }));
   });
 
+  it("resolves an explicitly required module only for a later mixin in that consumer", () => {
+    const target = "app/mailers/concerns/legacy.rb";
+    const {resolver} = setup({
+      "Gemfile": "gem 'rails', '~> 4.2.10'",
+      [target]: "module MailDelivery; end",
+      "app/mailers/daily.rb": "require_relative 'concerns/legacy'; class Daily; include MailDelivery; end",
+      "app/mailers/nested/weekly.rb": "require_relative '../concerns/legacy.rb'\nmodule Nested; class Weekly; extend ::MailDelivery; end; end",
+      "app/mailers/before.rb": "class Before; include MailDelivery; end; require_relative 'concerns/legacy'",
+      "app/mailers/other.rb": "class Other; include MailDelivery; end",
+      "app/mailers/dynamic.rb": "require_relative 'concerns/legacy' if enabled?; class Dynamic; include MailDelivery; end",
+      "app/mailers/shadow.rb": "require_relative 'concerns/legacy'; class Shadow; MailDelivery = Object; include MailDelivery; end",
+      "app/mailers/external.rb": "require_relative 'concerns/legacy'; class External < UnknownBase; include MailDelivery; end",
+      "lib/private/provider.rb": "module AnotherMixin; end",
+      "lib/consumer.rb": "require_relative 'private/provider'; class Consumer; include AnotherMixin; end",
+    });
+    expect(targets(resolver, "app/mailers/daily.rb", "include")).toEqual([target]);
+    expect(targets(resolver, "app/mailers/nested/weekly.rb", "extend")).toEqual([target]);
+    expect(targets(resolver, "lib/consumer.rb", "include")).toEqual(["lib/private/provider.rb"]);
+    for (const name of ["before", "other", "dynamic", "shadow", "external"]) {
+      expect(targets(resolver, `app/mailers/${name}.rb`, "include")).toEqual([]);
+    }
+    expect(resolver.resolveConstant("MailDelivery")).toBeNull();
+    expect(resolver.diagnostics).toContainEqual(expect.objectContaining({path: target, code: "unsupported_constant_mapping"}));
+  });
+
+  it("rejects a required mixin with conflicting or conditional providers", () => {
+    const {resolver} = setup({
+      "lib/addon.rb": "module Addon; end",
+      "lib/other.rb": "module Addon; end",
+      "lib/conditional.rb": "module Sometimes; end if enabled?",
+      "lib/conflict.rb": "require_relative 'addon'; require_relative 'other'; class Conflict; include Addon; end",
+      "lib/probe.rb": "require_relative 'conditional'; class Probe; extend Sometimes; end",
+    });
+    expect(targets(resolver, "lib/conflict.rb", "include")).toEqual([]);
+    expect(targets(resolver, "lib/probe.rb", "extend")).toEqual([]);
+  });
+
+  it("keeps canonical and lexical mixins when explicit loads also declare unrelated constants", () => {
+    const {resolver} = setup({
+      "app/models/addon.rb": "module Addon; end; module Addon; def run; end; end",
+      "lib/helpers.rb": "module Helper; end",
+      "lib/other_addon.rb": "module Addon; end",
+      "app/models/host/addon.rb": "module Host::Addon; end",
+      "app/models/probe.rb": "require_relative 'addon'; require_relative '../../lib/helpers'; class Probe; include Addon; end",
+      "app/models/host.rb": "require_relative 'addon'; require_relative '../../lib/other_addon'; class Host; include Addon; end",
+      "lib/shadows.rb": "module WithShadow::Addon; end",
+      "app/models/with_shadow.rb": "require_relative 'addon'; require_relative '../../lib/shadows'; class WithShadow; include Addon; end",
+    });
+    expect(targets(resolver, "app/models/probe.rb", "include")).toEqual(["app/models/addon.rb"]);
+    expect(targets(resolver, "app/models/host.rb", "include")).toEqual(["app/models/host/addon.rb"]);
+    expect(targets(resolver, "app/models/with_shadow.rb", "include")).toEqual([]);
+  });
+
   it.each([
     ["3.2.22", false, false], ["4.2.10", true, false], ["5.2.8", true, true],
   ] as const)("uses the conventional concerns directories for Rails %s", (version, modelRoot, jobRoot) => {

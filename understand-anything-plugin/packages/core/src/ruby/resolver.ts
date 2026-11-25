@@ -1,5 +1,5 @@
 import { readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { classicRailsMajor, detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
@@ -24,8 +24,13 @@ interface Reference {
   kind: DependencyFact["kind"];
   line: number;
   owner?: string;
+  mixinOffset?: number;
 }
-interface RubyFileFacts { declarations: Declaration[]; references: Reference[] }
+interface RubyFileFacts {
+  declarations: Declaration[];
+  references: Reference[];
+  requiredFiles: {path: string; end: number}[];
+}
 
 export interface RubyResolveOptions {
   nesting?: string[];
@@ -34,6 +39,7 @@ export interface RubyResolveOptions {
   association?: boolean;
   valueRead?: boolean;
   mixin?: boolean;
+  mixinOffset?: number;
 }
 
 const ASSOCIATIONS = new Set(["belongs_to", "has_one", "has_many", "has_and_belongs_to_many"]);
@@ -191,10 +197,22 @@ export class RubyDependencyResolver {
   }
 
   private extractFacts(path: string, root: RubyAstNode): RubyFileFacts {
-    const result: RubyFileFacts = {declarations: [], references: []};
+    const result: RubyFileFacts = {declarations: [], references: [], requiredFiles: []};
+    for (const statement of rubyStatements(root)) {
+      const call = rubyCall(statement);
+      if (call?.method !== "require_relative" || call.receiver || call.block || call.args.length !== 1 || call.args[0].type !== "string") continue;
+      const source = rubyLiteral(call.args[0]);
+      if (typeof source !== "string" || !source || source.startsWith("/") || /^[a-z]:/i.test(source) || source.includes("\\")) continue;
+      if (posix.extname(source) && !source.endsWith(".rb")) continue;
+      const target = posix.join(posix.dirname(path), source.endsWith(".rb") ? source : source + ".rb");
+      if (this.sources.has(target)) result.requiredFiles.push({path: target, end: statement.endIndex});
+    }
     const reference = (node: RubyAstNode, nesting: string[], kind: Reference["kind"], owner?: string) => {
       const name = rubyConstant(node);
-      if (name) result.references.push({reference: name, nesting: [...nesting], kind, line: node.startPosition.row + 1, owner});
+      if (name) result.references.push({
+        reference: name, nesting: [...nesting], kind, line: node.startPosition.row + 1, owner,
+        ...(kind === "include" || kind === "extend" ? {mixinOffset: node.startIndex} : {}),
+      });
     };
     const visit = (node: RubyAstNode, nesting: string[], owner?: Declaration, inMethod = false, conditional = false) => {
       if (["class", "module"].includes(node.type)) {
@@ -407,7 +425,36 @@ export class RubyDependencyResolver {
     return false;
   }
 
-  private exact(name: string, options: RubyResolveOptions): string | null {
+  /** A preceding literal load can supply a top-level module to this consumer
+   * even when Rails cannot autoload it. Keep unindexed side effects and
+   * competing definitions out of this narrowly scoped lookup. */
+  private requiredMixin(reference: string, options: RubyResolveOptions, locals?: Map<string, Declaration[]>):
+    {declaration: Declaration; locals?: Map<string, Declaration[]>} | null | undefined {
+    const name = reference.replace(/^::/, "");
+    const offset = options.mixinOffset;
+    if (!options.mixin || offset === undefined || !options.path || name.includes("::")) return;
+    const requires = this.facts.get(options.path)?.requiredFiles ?? [];
+    if (!requires.length) return;
+    const paths = new Set(requires.filter(load => load.end <= offset).map(load => load.path));
+    const loaded = [...paths].flatMap(path => this.facts.get(path)?.declarations ?? []);
+    const matching = loaded.filter(d => d.name === name);
+    if (!matching.length) return;
+    const declaration = matching.find(d => d.kind === "module" && !d.conditional && !d.nesting.length);
+    if (!declaration || matching.some(d => d.kind !== "module" || d.path !== declaration.path)) return null;
+    const canonical = this.bindings.get(name)?.has(declaration.path);
+    if (!canonical && matching.length !== 1) return null;
+    if (this.declarations.get(name)?.some(d => d.kind !== "module" || (!canonical && d.path !== declaration.path))) return null;
+    // Other explicitly loaded files can introduce a lexical shadow or reopen
+    // an ancestor, even outside the autoload roots. Keep their evidence local.
+    const extra = loaded.filter(d => d.name !== name && !this.declarations.get(d.name)?.includes(d));
+    if (extra.length) {
+      locals = new Map(locals);
+      for (const d of extra) locals.set(d.name, [...(locals.get(d.name) ?? []), d]);
+    }
+    return {declaration, locals};
+  }
+
+  private exact(name: string, options: RubyResolveOptions, required?: Declaration): string | null {
     const locals = options.path && this.consumerDeclarations.get(options.path);
     if (locals) {
       let prefix = name;
@@ -435,7 +482,8 @@ export class RubyDependencyResolver {
       return null;
     }
     const targets = this.bindings.get(name);
-    return targets?.size === 1 ? [...targets][0] : null;
+    if (targets?.size) return targets.size === 1 ? [...targets][0] : null;
+    return required?.name === name ? required.path : null;
   }
 
   /** Returns a file endpoint only. A known namespace with a missing child
@@ -443,11 +491,13 @@ export class RubyDependencyResolver {
   resolveConstant(reference: string, options: RubyResolveOptions = {}): string | null {
     if (!this.isRails || this.inferenceBlocked || !/^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*$/.test(reference)) return null;
     if (reference.startsWith("::")) {
-      const target = this.exact(reference.slice(2), options);
+      const required = this.requiredMixin(reference, options);
+      if (required === null) return null;
+      const target = this.exact(reference.slice(2), options, required?.declaration);
       return options.association && target && !/(?:^|\/)app\/models\//.test(target) ? null : target;
     }
     const nesting = options.nesting ?? [];
-    const locals = options.path ? this.consumerDeclarations.get(options.path) : undefined;
+    let locals = options.path ? this.consumerDeclarations.get(options.path) : undefined;
     if (options.association) {
       // ActiveRecord tries the complete compute_type candidate at each level;
       // this differs from lexical first-component lookup.
@@ -465,11 +515,17 @@ export class RubyDependencyResolver {
       const candidate = `${scope}::${first}`;
       if (locals?.has(candidate) || this.namespaces.has(candidate) || this.blockedPrefix(candidate)) return this.exact(name, options);
     }
+    const required = this.requiredMixin(reference, options, locals);
+    if (required === null) return null;
+    if (required?.locals) {
+      locals = required.locals;
+      if (nesting.some(scope => locals?.has(`${scope}::${first}`))) return null;
+    }
     // Local inherited constants and mixin constants require Ruby's ancestor
     // rules. We deliberately suppress top-level fallback when those rules can
     // change a result, instead of pretending lexical search is complete.
     const qualifiedMixin = !!options.mixin && reference.includes("::");
-    const ancestry = nesting[0] ? this.ancestorLookup(nesting[0], first, new Set(), locals, qualifiedMixin) : "clear";
+    const ancestry = nesting[0] ? this.ancestorLookup(nesting[0], first, new Set(), locals, qualifiedMixin, required?.declaration) : "clear";
     if (ancestry !== "clear") {
       // A literal qualified mixin can still identify a file worth inspecting.
       // An inherited first component or an ambiguous provider rules that out.
@@ -484,15 +540,16 @@ export class RubyDependencyResolver {
       });
       return null;
     }
-    return this.exact(reference, options);
+    return this.exact(reference, options, required?.declaration);
   }
 
   private ancestorLookup(
     name: string, first: string, seen: Set<string>, locals: Map<string, Declaration[]> | undefined, checkOtherAncestors: boolean,
+    required?: Declaration,
   ): "clear" | "unknown" | "shadowed" {
     if (seen.has(name) || this.blockedPrefix(name)) return "shadowed";
     seen.add(name);
-    const defs = [...(this.declarations.get(name) ?? []), ...(locals?.get(name) ?? [])];
+    const defs = [...(this.declarations.get(name) ?? (required?.name === name ? [required] : [])), ...(locals?.get(name) ?? [])];
     let result: "clear" | "unknown" = "clear";
     for (const def of defs) {
       const bases = [
@@ -508,8 +565,8 @@ export class RubyDependencyResolver {
         // Inspect local reopenings before trusting a well-known framework base.
         // A locally autoloaded lookalike is not evidence of framework identity.
         if ((FRAMEWORK_BASES.has(resolved) || resolved === "ActiveSupport::Concern") && !this.bindings.has(resolved) && !this.declarations.has(resolved)) continue;
-        const inherited = this.declarations.has(resolved)
-          ? this.ancestorLookup(resolved, first, new Set(seen), locals, checkOtherAncestors) : "unknown";
+        const inherited = this.declarations.has(resolved) || required?.name === resolved
+          ? this.ancestorLookup(resolved, first, new Set(seen), locals, checkOtherAncestors, required) : "unknown";
         if (inherited !== "clear") {
           if (!checkOtherAncestors || inherited === "shadowed") return inherited;
           result = "unknown";
@@ -540,7 +597,7 @@ export class RubyDependencyResolver {
       }
       const target = this.resolveConstant(ref.reference, {
         nesting: ref.nesting, path, line: ref.line, association: ref.kind === "association",
-        valueRead: ref.kind === "constant", mixin: ref.kind === "include" || ref.kind === "extend",
+        valueRead: ref.kind === "constant", mixin: ref.kind === "include" || ref.kind === "extend", mixinOffset: ref.mixinOffset,
       });
       if (!target || target === path) continue;
       found.push({target, type:ref.kind === "superclass" ? "inherits" : "depends_on", kind:ref.kind, reference:ref.displayReference ?? ref.reference, line:ref.line});
