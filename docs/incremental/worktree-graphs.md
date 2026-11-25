@@ -16,21 +16,25 @@ The seed is an independent, Git-ignored copy in the new checkout's `.ua/`. It ca
 
 ## Analyze and update
 
-1. **Create the base once.** In your long-lived checkout, run the `understand` skill at a clean, committed base. To keep a first-time graph private in a project with neither data directory, run `mkdir .ua && printf '*\n' > .ua/.gitignore` before analysis. If the base checkout itself is a linked worktree, use the session setting below here as well.
-2. **Work on the branch.** Seed the worktree. You can read the copied graph immediately. After committing code changes, run `understand` in the worktree with `UNDERSTAND_NO_WORKTREE_REDIRECT=1` in the analyzer's environment. The planner compares the recorded baseline to the branch. A current graph can skip semantic analysis. Large changes or extractor upgrades can require more work.
-3. **Refresh and clean up.** Rerun `understand` in the long-lived checkout as the base advances. New worktrees will pick up that graph. Remove finished worktrees normally with T3 Code or Worktrunk. Their local copies go with them.
+Run the same command to create the initial graph on your base branch, refresh it as the base advances, or analyze committed changes on a feature branch.
 
-For an interactive agent launched from a shell, set the variable on the process that runs the skill, for example `UNDERSTAND_NO_WORKTREE_REDIRECT=1 claude`. In an existing T3 conversation, give the agent this instruction.
+```sh
+just --justfile "$HOME/src/worktrees/justfile" ua-analyze
+```
 
-> Run the understand skill on this worktree's Git root. Set UNDERSTAND_NO_WORKTREE_REDIRECT=1 when resolving the project root and keep the analysis in this checkout.
+The recipe runs `ua-seed`, then starts an interactive Claude Code session at the current Git root with `UNDERSTAND_NO_WORKTREE_REDIRECT=1`. If this is the first analysis and no graph is available, it creates a Git-ignored `.ua/` directory. Claude runs the fork's `/understand-anything:understand` skill and can prompt you to review file exclusions. The default uses incremental analysis when a baseline is available.
+
+For a deliberate full rebuild, append `--full`. Pass multiple skill options together as one quoted string, for example `ua-analyze '--review --language en'`. The launcher loads the plugin from `~/src/vendor/Understand-Anything/understand-anything-plugin`. Set `UA_PLUGIN_ROOT` to the plugin directory if your fork lives elsewhere.
+
+Remove finished worktrees normally with T3 Code or Worktrunk. Their local copies go with them.
 
 ## Install the shared command
 
-From an Understand Anything source checkout, copy the two files to your shared worktrees directory.
+From an Understand Anything source checkout, copy the recipes and helpers to your shared worktrees directory.
 
 ```sh
 mkdir -p "$HOME/src/worktrees"
-cp scripts/worktrees/ua.just scripts/worktrees/seed-graph.mjs "$HOME/src/worktrees/"
+cp scripts/worktrees/ua.just scripts/worktrees/seed-graph.mjs scripts/worktrees/analyze-graph.sh "$HOME/src/worktrees/"
 ```
 
 Add `import? "ua.just"` to your shared justfile. You can also use the standalone module directly with `just --justfile "$HOME/src/worktrees/ua.just" ua-seed`.
