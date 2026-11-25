@@ -32,7 +32,7 @@ interface Reference {
   mixinOffset?: number;
   receiverCall?: {method: string; offset: number};
   reflection?: {name: string; macro: string; path: string};
-  classNameCall?: {method: string; nesting: string[]};
+  classNameCall?: {method: string; nesting: string[]; offset: number};
   through?: {join: string; sources: string[]; override?: string};
 }
 interface RubyFileFacts {
@@ -56,7 +56,7 @@ export interface RubyResolveOptions {
   path?: string;
   line?: number;
   association?: boolean;
-  macroTarget?: "serializer" | "validator" | "grape";
+  macroTarget?: "serializer" | "validator" | "grape" | "associationClassName";
   valueRead?: boolean;
   mixin?: boolean;
   mixinOffset?: number;
@@ -364,7 +364,7 @@ export class RubyDependencyResolver {
             const receiver = rubyConstant(selector?.receiver);
             if (selector && receiver && ["name", "to_s"].includes(selector.method) && !selector.args.length
               && !selector.block && value.childForFieldName("operator")?.text === ".") {
-              classNameCall = {method: selector.method, nesting: [...nesting]};
+              classNameCall = {method: selector.method, nesting: [...nesting], offset: value.startIndex};
               return receiver;
             }
           }
@@ -652,15 +652,19 @@ export class RubyDependencyResolver {
     return this.lookupConstant(reference, options, "strict")?.target ?? null;
   }
 
-  /** A singleton method corroborates an otherwise uncertain receiver constant.
-   * Its spelling must identify the exact declared provider in the autoload
-   * index; a similarly named method on another constant supplies no evidence. */
+  /** Corroborate an uncertain receiver using the uniquely named local class
+   * or module, after checking loads and other ancestors for shadows. */
   private inferredReceiver(reference: string, options: RubyResolveOptions): ConstantMatch | null {
     const call = options.receiverCall, scope = options.nesting?.[0];
     if (!scope || !call || !options.path || DEVISE_NAMESPACE.test(reference)) return null;
     const definitions = this.declarations.get(reference);
-    if (definitions?.length !== 1 || !definitions[0].singletonMethods?.has(call.method)) return null;
+    if (definitions?.length !== 1) return null;
     const target = definitions[0].path;
+    // The class_name option corroborates a receiver that is itself a known
+    // local Active Record model. Other calls need a directly declared method.
+    if (options.macroTarget === "associationClassName") {
+      if (!/(?:^|\/)app\/models\//.test(target) || !this.modelOwner(reference, target, new Set())) return null;
+    } else if (!definitions[0].singletonMethods?.has(call.method)) return null;
     if (target === options.path || !this.bindings.get(reference)?.has(target)) return null;
 
     const first = reference.split("::")[0];
@@ -841,7 +845,8 @@ export class RubyDependencyResolver {
     const name = this.lexicalName(ref.reference, nesting, this.consumerDeclarations.get(path));
     const declarations = this.declarations.get(name);
     if (declarations?.length !== 1 || declarations[0].kind !== "class" || this.overridesClassName(name, method)) return null;
-    const target = this.resolveConstant(ref.reference, {nesting, path, line: ref.line});
+    const target = this.lookupConstant(ref.reference, {nesting, path, line: ref.line,
+      macroTarget: "associationClassName", receiverCall: {method, offset: ref.classNameCall.offset}}, this.mixinResolution)?.target;
     return target === declarations[0].path && this.bindings.get(name)?.has(target) ? name : null;
   }
 

@@ -885,6 +885,24 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics.map(d=>d.code)).toContain("unsupported_association_context");
   });
 
+  it("infers a model class_name receiver across unknown ancestors only when local shadows are absent", () => {
+    const {resolver, root, inventory} = setup({
+      "app/models/person.rb": "class Person < ApplicationRecord; end",
+      "app/models/report.rb": "class Report < ApplicationRecord; include External; belongs_to :owner, class_name: Person.to_s; end",
+      "app/models/shadow.rb": "module Shadow; Person = Other; end",
+      "app/models/shadowed.rb": "class Shadowed < ApplicationRecord; include External; include Shadow; belongs_to :owner, class_name: Person.to_s; end",
+      "app/models/session.rb": "class Session < ApplicationRecord; include Devise::Models; belongs_to :owner, class_name: Person.name; end",
+      "app/models/plain.rb": "class Plain; end",
+      "app/models/book.rb": "class Book < ApplicationRecord; include External; belongs_to :owner, class_name: Plain.name; end",
+    });
+    expect(targets(resolver, "app/models/report.rb", "association")).toEqual(["app/models/person.rb"]);
+    for (const name of ["shadowed", "session", "book"]) {
+      expect(targets(resolver, `app/models/${name}.rb`, "association")).toEqual([]);
+    }
+    const strict = createRubyDependencyResolver({projectRoot: root, files: inventory, plugin, mixinResolution: "strict"});
+    expect(targets(strict, "app/models/report.rb", "association")).toEqual([]);
+  });
+
   it("does not invent bare references from dynamic namespace receivers or capitalized methods", () => {
     const {resolver} = setup({"app/models/user.rb":"class User; end", "probe.rb":"context::User.find; context.User; :User; 'User'; # User\n"});
     expect(targets(resolver,"probe.rb")).toEqual([]);
