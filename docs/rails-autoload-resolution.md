@@ -4,7 +4,7 @@ Rails dependency extraction runs as part of `extract-import-map.mjs`. It parses 
 
 Explicit `require` and `require_relative` relationships remain in `importMap`. The additional scan fields are:
 
-- `dependencyMap`: source file paths mapped to facts with `target`, `type`, `kind`, optional `reference`, and optional source `line`. A mixin resolved by the pragmatic fallback also carries `resolution: "inferred"`.
+- `dependencyMap`: source file paths mapped to facts with `target`, `type`, `kind`, optional `reference`, and optional source `line`. A convention-based match carries `resolution: "inferred"`. Graph search and explain display that marker alongside the source line.
 - `dependencyDiagnostics`: unsupported or ambiguous cases, with a code, message, source path, optional line, and optional `candidateTarget` file for a qualified mixin. Read and parse failures remain in `failures`.
 - `dependencyResolverVersion`: the persisted version of the dependency resolver.
 - `rubyMixinResolution`: the effective project mode, either `pragmatic` (default) or `strict`.
@@ -31,21 +31,29 @@ The default `pragmatic` mode handles literal, qualified mixins such as `include 
 
 Uninspected Devise ancestors and dynamic ancestry keep the qualified mixin in diagnostics when lookup is uncertain. In `strict` mode, all such uncertain mixins stay in diagnostics. A unique local candidate appears as `candidateTarget`. To switch modes, run `/understand --ruby-mixin-resolution strict` or `/understand --ruby-mixin-resolution pragmatic`. The command saves the preference in the project's analysis configuration.
 
+Ruby imports also accept selected paths constructed with `File.expand_path`, `__FILE__`, and a known `Rails.root.join`. A rooted `Dir.glob` or `Dir[...].each` can supply files to `require` or `File.read`. Expansion uses the inventory of the owning application. File reads produce a dependency at the read site.
+
+A constant read can point to the unique unconditional assignment that supplies its value. This covers Rails initializers and autoload files such as a GraphQL type assigned by `GraphQL::ObjectType.define`. Resolving the assignment locates the source file without evaluating its right-hand side.
+
 A literal, top-level `require_relative` can also establish where a subsequent `include` or `extend` gets its module. The required file must be in the selected inventory and declare the named top-level module unconditionally. This evidence applies to the consumer that loads it, including when the provider's filename differs from its Rails autoload name.
 
 The Ruby structural extractor also reads method definitions in modules that directly extend `ActiveSupport::Concern`. It records the names, parameters, and source lines of methods defined directly inside `included` and `class_methods` blocks, including singleton methods written with `def self.name` or `class << self`. Methods in an `included` block carry `owner: null` because the host is selected at runtime. Methods in a `class_methods` block belong to the concern's `ClassMethods` module.
 
-Direct `belongs_to`, `has_one`, `has_many`, and `has_and_belongs_to_many` associations are recognized in model and concern contexts when their names/options and local model targets can be resolved. Collection naming uses singularization; explicit `class_name` uses model namespace lookup. Polymorphic `belongs_to`, `through`, dynamic options, callback simulation, and join-model inference are outside this subset.
+Direct `belongs_to`, `has_one`, `has_many`, and `has_and_belongs_to_many` associations use local model names and literal `class_name` overrides. The resolver can trace a `through:` declaration over two known direct model associations, including a literal `source:`, and marks the resulting association inferred. Polymorphic and dynamic associations stay unresolved. A literal `validates :code, label_code: true` can link to a local `LabelCodeValidator`. Serializer options can link to the explicitly named local serializer.
 
-Routes accept immediate literal HTTP declarations with `to: "controller#action"` and option-free `resources`/`resource` in the main application's `routes.draw` block. Both `Rails.application` and the statically declared application class can be the receiver. Literal `namespace` blocks qualify controller names, including when `path:` or `as:` changes the URL or route helpers. Singular resources pluralize the controller name. Other scopes, conditions, arbitrary blocks, mounts, drawn files, engine routes, and resource options produce diagnostics.
+In the main application's `routes.draw` block, literal HTTP verbs, `match`, `root`, resources, and their nested routes can link to controllers. The resolver follows literal namespaces, URL scopes, module overrides, and a local zero-argument route lambda mounted by a namespace. It retains a simple configuration guard such as `if SiteOptions.routes.preview` in the source evidence, including the inverse guard for an `else` branch. Dynamic destinations, arbitrary blocks, and mounted engines produce diagnostics.
 
-A literal controller `render` can resolve to a single HTML ERB, Haml, or Slim template under the application's `app/views`. The lookup checks the controller's ancestry, view path overrides, and competing formats or variants. Each fact identifies the render call's source line. Implicit renders and runtime-selected templates remain unresolved.
+Controller renders, layout declarations and literal partials in ERB, Haml, and Slim can link to local templates. A public empty action and a relative partial with an established rendering controller can produce inferred links. Competing formats, variants, or overridden view lookup can prevent a match. In Rails assets using standard `handlebars_assets` registration, literal Handlebars partial tags can link to the registered template.
+
+A Resque scheduler initializer can identify its YAML schedule directly or through a local configuration accessor. Literal job names and class overrides link to a local job implementation with inferred evidence at the schedule line. The evidence retains the environment section when present.
+
+RSpec shared-group names and FactoryBot builder calls can link to unique declarations in the owning spec suite. These references carry inferred evidence. A receiver-less builder also requires an example context and a load path to an unfiltered `RSpec.configure` inclusion of `FactoryBot::Syntax::Methods`. A conflicting declaration or local helper shadow suppresses the match.
 
 Ruby test pairing recognizes exact Minitest/RSpec unit-test paths, including `*_helper` units under `app/helpers`, and gem `lib` conventions, preserving namespaces and engine prefixes. Both files must exist. The direction is production → test. Request, system, integration, shared-example, and test-support paths are excluded; pairing is a naming heuristic, not proof of coverage.
 
 ## Incremental updates
 
-Ruby source changes conservatively refresh Ruby dependency facts, including consumers whose source did not change. Inventory changes, resolver version migration, changing `rubyMixinResolution`, and missing dependency baselines also trigger refresh. A mode change at an unchanged Git commit updates the graph without reanalyzing source files. Empty refreshed fact lists replace old lists, and merge removes prior deterministic edges before recovering the current facts. Existing unrelated semantic relationships are preserved.
+Changes to Ruby sources, RSpec defaults, templates, or supported configuration refresh affected deterministic facts, including consumers whose source did not change. Inventory changes, resolver version migration, changing `rubyMixinResolution`, and missing dependency baselines also trigger refresh. A mode change at an unchanged Git commit updates the graph without reanalyzing source files. Empty refreshed fact lists replace old lists, and merge removes prior deterministic edges before recovering the current facts. Existing unrelated semantic relationships are preserved.
 
 On the first incremental run with concern-hook extraction, the scanner identifies Ruby files that may contain hook methods. Preparation compares their new function counts with the saved fingerprints even when the source bytes match. Files that gain methods or lack structural fingerprints enter reanalysis. The following run can reuse the updated baseline.
 
