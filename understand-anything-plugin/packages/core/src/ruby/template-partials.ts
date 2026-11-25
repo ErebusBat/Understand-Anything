@@ -73,7 +73,7 @@ function qualifiedPartial(node: RubyAstNode): string | null {
     }
   }
   // Names without a directory use the rendering controller's lookup prefixes.
-  return typeof name === "string" && /^(?:[a-z0-9_-]+\/)+[a-z0-9_-]+$/.test(name) ? name : null;
+  return typeof name === "string" && /^(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_-]+$/.test(name) ? name : null;
 }
 
 /** Read standalone Ruby output expressions; markup, strings and dynamic
