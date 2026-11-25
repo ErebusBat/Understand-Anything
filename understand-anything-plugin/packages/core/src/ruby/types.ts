@@ -7,7 +7,12 @@ export interface DependencyFact {
   kind: "constant" | "superclass" | "include" | "extend" | "association" | "route" | "render";
   reference?: string;
   line?: number;
+  /** A qualified mixin matched a local module across uninspected ancestry. */
+  resolution?: "inferred";
 }
+
+export type RubyMixinResolution = "pragmatic" | "strict";
+export const DEFAULT_RUBY_MIXIN_RESOLUTION: RubyMixinResolution = "pragmatic";
 
 /** Unsupported/ambiguous semantics, never a substitute for read/parse failures. */
 export interface DependencyDiagnostic {

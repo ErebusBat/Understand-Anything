@@ -1,7 +1,6 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
-import { RubyDependencyResolver } from "./resolver.js";
+import { RubyDependencyResolver, type RubyDependencyResolverOptions } from "./resolver.js";
 import { RailsViewResolver } from "./rails-views.js";
 import { extractRailsRouteDependencies } from "./rails-routes.js";
 import type { DependencyDiagnostic, DependencyFact, RubyDependencyFailure, RubyInventoryFile } from "./types.js";
@@ -29,7 +28,7 @@ export class RubyWorkspaceDependencyResolver {
   private readonly contextDiagnostics: DependencyDiagnostic[] = [];
   private readonly prefixes: string[];
 
-  constructor(private readonly options: { projectRoot: string; files: RubyInventoryFile[]; plugin: TreeSitterPlugin }) {
+  constructor(private readonly options: RubyDependencyResolverOptions) {
     const files = [...new Map(options.files.filter(f => f.path.endsWith(".rb") || f.language === "ruby").map(f => [f.path, f])).values()]
       .sort((a, b) => compare(a.path, b.path));
     const applications = new Set<string>();
@@ -79,7 +78,7 @@ export class RubyWorkspaceDependencyResolver {
         for (const file of inventory) this.failures.push({path: prefix + file.path, stage: "ruby-file-read", message: error instanceof Error ? error.message : String(error)});
         continue;
       }
-      const resolver = new RubyDependencyResolver({projectRoot, files: inventory, plugin: options.plugin});
+      const resolver = new RubyDependencyResolver({...options, projectRoot, files: inventory});
       const views = new RailsViewResolver([...(viewPaths.get(prefix) ?? [])], projectRoot, resolver, options.plugin);
       const context = {prefix, resolver, views};
       this.projects.push(context);
@@ -144,6 +143,6 @@ export class RubyWorkspaceDependencyResolver {
   }
 }
 
-export function createRubyWorkspaceDependencyResolver(options: { projectRoot: string; files: RubyInventoryFile[]; plugin: TreeSitterPlugin }): RubyWorkspaceDependencyResolver {
+export function createRubyWorkspaceDependencyResolver(options: RubyDependencyResolverOptions): RubyWorkspaceDependencyResolver {
   return new RubyWorkspaceDependencyResolver(options);
 }

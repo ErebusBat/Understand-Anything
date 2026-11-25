@@ -208,8 +208,8 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.resolveConstant("Observable")).toBe("app/services/concerns/observable.rb");
   });
 
-  it("preserves ancestor shadowing when a classic concern matches the parent root", () => {
-    const {resolver} = setup({
+  it("distinguishes an inferred classic concern from its exact absolute spelling and honors strict mode", () => {
+    const {resolver, root, inventory} = setup({
       "Gemfile": "gem 'rails', '~> 4.2.10'",
       "config/initializers/external.rb": "module ActiveRecord; class Base; include External::Mixin; end; end",
       "app/models/concerns/item/label_index.rb": "module Concerns::Item::LabelIndex; end",
@@ -218,16 +218,24 @@ describe("bounded Rails dependency resolver", () => {
         include ::Concerns::Item::LabelIndex
       end`,
     });
-    expect(resolver.getDependencies("app/models/item.rb")).toEqual([
-      expect.objectContaining({kind: "include", reference: "::Concerns::Item::LabelIndex", line: 3}),
-    ]);
-    expect(resolver.diagnostics).toContainEqual(expect.objectContaining({
+    const path = "app/models/item.rb";
+    const name = "Concerns::Item::LabelIndex";
+    const target = "app/models/concerns/item/label_index.rb";
+    const exact = {kind: "include", type: "depends_on", reference: "::" + name, line: 3, target};
+    expect(resolver.getDependencies(path)).toEqual([exact, {
+      kind: "include", type: "depends_on", reference: name, line: 2, target, resolution: "inferred",
+    }]);
+    expect(resolver.diagnostics.some(d => d.path === path)).toBe(false);
+    expect(resolver.resolveConstant(name, {path, nesting: ["Item"]})).toBeNull();
+    const strict = createRubyDependencyResolver({projectRoot: root, files: inventory, plugin, mixinResolution: "strict"});
+    expect(strict.getDependencies(path)).toEqual([exact]);
+    expect(strict.diagnostics).toContainEqual(expect.objectContaining({
       code: "unsupported_ancestor_lookup", path: "app/models/item.rb", line: 2,
       candidateTarget: "app/models/concerns/item/label_index.rb",
     }));
   });
 
-  it("only suggests unique, qualified mixin modules without a known lexical or inherited shadow", () => {
+  it("only infers unique, qualified mixin modules without a known lexical or inherited shadow", () => {
     const {resolver} = setup({
       "app/models/features/tracking.rb": "module Features::Tracking; end",
       "app/models/features/colliding.rb": "module Features::Colliding; end",
@@ -241,6 +249,7 @@ describe("bounded Rails dependency resolver", () => {
         extend Features::Colliding
         extend Features::Widget
         extend Simple
+        extend Features::Alias
       end`,
       "app/models/inherited.rb": `class Inherited
         include External
@@ -251,12 +260,42 @@ describe("bounded Rails dependency resolver", () => {
         module Features; end
         extend Features::Tracking
       end`,
+      "config/initializers/alias.rb": "module Features; Alias = Tracking; end",
+      "app/models/features/alias.rb": "module Features::Alias; end",
     });
-    for (const file of ["probe", "inherited", "lexical"]) {
+    expect(resolver.getDependencies("app/models/probe.rb")).toEqual([
+      expect.objectContaining({kind: "extend", reference: "Features::Tracking", line: 2, resolution: "inferred"}),
+    ]);
+    for (const file of ["inherited", "lexical"]) {
       expect(targets(resolver, `app/models/${file}.rb`, "extend")).toEqual([]);
     }
-    expect(resolver.diagnostics.filter(d => d.candidateTarget)).toEqual([
-      expect.objectContaining({path: "app/models/probe.rb", line: 2, candidateTarget: "app/models/features/tracking.rb"}),
+    expect(resolver.diagnostics.filter(d => d.candidateTarget)).toEqual([]);
+  });
+
+  it("keeps dynamic and external Devise ancestry strict while following proven lexical and absolute references", () => {
+    const target = "app/models/features/tracking.rb";
+    const {resolver} = setup({
+      [target]: "module Features::Tracking; end",
+      "config/initializers/devise.rb": "module Devise; class CallbacksController; end; end",
+      "app/controllers/base_controller.rb": "class BaseController < ::Devise::CallbacksController; end",
+      "app/controllers/callbacks_controller.rb": `class CallbacksController < BaseController
+        include MyGem::Behavior
+        include Features::Tracking
+        include ::Features::Tracking
+      end`,
+      "app/models/dynamic.rb": "class Dynamic; include configurable_module; include Features::Tracking; end",
+      "app/models/admin/features/tracking.rb": "module Admin; module Features; module Tracking; end; end; end",
+      "app/controllers/admin/known_controller.rb": "module Admin; class KnownController < Devise::Other; include Features::Tracking; end; end",
+    });
+    expect(resolver.getDependencies("app/controllers/callbacks_controller.rb").filter(f => f.kind === "include")).toEqual([
+      {kind: "include", type: "depends_on", target, reference: "::Features::Tracking", line: 4},
+    ]);
+    expect(resolver.getDependencies("app/models/dynamic.rb")).toEqual([]);
+    expect(resolver.getDependencies("app/controllers/admin/known_controller.rb")).toEqual([
+      {kind: "include", type: "depends_on", target: "app/models/admin/features/tracking.rb", reference: "Features::Tracking", line: 1},
+    ]);
+    expect(resolver.diagnostics.filter(d => d.candidateTarget).map(d => [d.path, d.line, d.candidateTarget])).toEqual([
+      ["app/controllers/callbacks_controller.rb", 3, target], ["app/models/dynamic.rb", 1, target],
     ]);
   });
 

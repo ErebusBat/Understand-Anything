@@ -65,16 +65,21 @@ describe("Ruby workspace contexts", () => {
       "app/models/post.rb": "class Post; include Concerns::Auditable; end",
       "app/models/comment.rb": "class Comment < ExternalRecord; include Concerns::Auditable; end",
     };
-    const resolver = fixture({
+    const f = fixture({
       ...sources, Gemfile: "gem 'rails', '~> 7.1'",
       ...nested("services/legacy/", {...sources, Gemfile: "gem 'rails', '~> 4.2.10'"}),
-    }).resolve();
+    });
+    const resolver = f.resolve();
     expect(resolver.getDependencies("services/legacy/app/models/post.rb")).toEqual([
       expect.objectContaining({target: "services/legacy/app/models/concerns/auditable.rb", kind: "include"}),
     ]);
     expect(resolver.getDependencies("app/models/post.rb")).toEqual([]);
-    expect(resolver.getDependencies("services/legacy/app/models/comment.rb")).toEqual([]);
-    expect(resolver.diagnostics).toContainEqual(expect.objectContaining({
+    expect(resolver.getDependencies("services/legacy/app/models/comment.rb")).toEqual([
+      expect.objectContaining({target: "services/legacy/app/models/concerns/auditable.rb", kind: "include", resolution: "inferred"}),
+    ]);
+    const strict = createRubyWorkspaceDependencyResolver({projectRoot: f.root, files: f.files, plugin, mixinResolution: "strict"});
+    expect(strict.getDependencies("services/legacy/app/models/comment.rb")).toEqual([]);
+    expect(strict.diagnostics).toContainEqual(expect.objectContaining({
       path: "services/legacy/app/models/comment.rb", code: "unsupported_ancestor_lookup",
       candidateTarget: "services/legacy/app/models/concerns/auditable.rb",
     }));
