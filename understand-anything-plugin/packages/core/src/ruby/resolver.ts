@@ -27,6 +27,8 @@ interface Reference {
   line: number;
   owner?: string;
   mixinOffset?: number;
+  reflection?: {name: string; macro: string; path: string};
+  through?: {join: string; sources: string[]; override?: string};
 }
 interface RubyFileFacts {
   declarations: Declaration[];
@@ -107,6 +109,9 @@ export class RubyDependencyResolver {
   private readonly blocked = new Set<string>();
   private readonly dependencyCache = new Map<string, DependencyFact[]>();
   private readonly diagnosticKeys = new Set<string>();
+  /** A null entry means the reflection is duplicate or is outside the static subset. */
+  private readonly reflections = new Map<string, Map<string, Reference | null>>();
+  private readonly dynamicReflections = new Set<string>();
   private readonly specRegistry = new RubySpecRegistry();
   private readonly initializerPaths = new Set<string>();
   private readonly mixinResolution: RubyMixinResolution;
@@ -318,25 +323,52 @@ export class RubyDependencyResolver {
         const line = node.startPosition.row + 1;
         const reject = (message: string) => this.addDiagnostic({path, code: "unsupported_association", line, message});
         const name = rubyLiteral(call.args[0]);
+        const reflections = this.reflections.get(owner.name) ?? new Map<string, Reference | null>();
+        this.reflections.set(owner.name, reflections);
+        const unique = typeof name === "string" && !reflections.has(name);
+        if (typeof name === "string") reflections.set(name, null);
+        else this.dynamicReflections.add(owner.name);
         const options = rubyOptions(call.args.slice(1));
         if (inMethod || conditional || call.block || typeof name !== "string" || !/^[a-z][a-z_\d]*$/.test(name) || !options) {
           reject("Association must be an unconditional class/concern macro with literal name and options");
           return;
         }
-        if (options.has("through") || options.has("source") || options.has("source_type") || options.get("polymorphic") !== undefined && options.get("polymorphic") !== false) {
-          reject("Through, source, and polymorphic association targets are unresolved");
+        if (options.has("source_type") || options.get("polymorphic") !== undefined && options.get("polymorphic") !== false
+          || options.has("anonymous_class") || options.has("source") && !options.has("through")) {
+          reject("Dynamic or polymorphic association targets are unresolved");
           return;
         }
         const override = options.get("class_name");
         const collection = ["has_many", "has_and_belongs_to_many"].includes(call.method);
         const singular = collection ? this.configuration.inflections.singularize(name) : name;
-        const target = override === undefined ? singular && this.camelize(singular) : typeof override === "string" && /^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*$/.test(override) ? override : null;
+        const target = override === undefined ? (options.has("through") ? name : singular && this.camelize(singular)) : typeof override === "string" && /^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*$/.test(override) ? override : null;
         if (!target) { reject("Association class name or inflection is outside the supported literal subset"); return; }
         // compute_type uses the model FQN, not the Ruby lexical nesting.
         const modelNesting: string[] = [];
         const parts = owner.name.split("::");
         while (parts.length) { modelNesting.push(parts.join("::")); parts.pop(); }
-        result.references.push({reference: target, displayReference: `${node.text.replace(/\s+/g, " ")} => ${target}`, nesting: modelNesting, kind: "association", line, owner: owner.name});
+        const statement = node.text.replace(/\s+/g, " ");
+        const ref: Reference = {reference: target, displayReference: statement + " => " + target, nesting: modelNesting,
+          kind: "association", line, owner: owner.name, reflection: {name, macro: call.method, path}};
+        if (options.has("through")) {
+          const join = options.get("through"), source = options.get("source");
+          if (owner.kind !== "class" || !["has_many", "has_one"].includes(call.method)
+            || typeof join !== "string" || !/^[a-z][a-z_\d]*$/.test(join)
+            || source !== undefined && (typeof source !== "string" || !/^[a-z][a-z_\d]*$/.test(source))) {
+            reject("Through associations need literal reflection names on a model class");
+            return;
+          }
+          const sourceName = source ?? this.configuration.inflections.singularize(name);
+          if (!sourceName) {
+            reject("Through association source name is outside the supported inflections");
+            return;
+          }
+          const sources = source === undefined && sourceName !== name ? [sourceName, name] : [sourceName];
+          ref.through = {join, sources, ...(typeof override === "string" ? {override} : {})};
+          ref.displayReference = statement;
+        }
+        if (unique) reflections.set(name, ref);
+        result.references.push(ref);
         return;
       }
       if (rubyConstant(node)) { reference(node, nesting, "constant", owner?.name); return; }
@@ -677,6 +709,53 @@ export class RubyDependencyResolver {
     return reference;
   }
 
+  /** A reflection from a parent class or included concern can change either
+   * half of the chain. Only follow reflections declared on the two classes. */
+  private inheritedReflection(owner: string, name: string, seen = new Set<string>()): boolean {
+    if (seen.has(owner)) return false;
+    seen.add(owner);
+    for (const def of this.declarations.get(owner) ?? []) {
+      const parents = def.mixins.map(base => this.lexicalName(base, [owner, ...def.nesting]));
+      if (def.superclass) parents.push(this.lexicalName(def.superclass, def.nesting));
+      for (const parent of parents) {
+        if (parent === "<dynamic>" || this.dynamicReflections.has(parent) || this.reflections.get(parent)?.has(name)
+          || this.inheritedReflection(parent, name, seen)) return true;
+      }
+    }
+    return false;
+  }
+
+  private uniqueModelAt(path: string): string | null {
+    const models = this.facts.get(path)?.declarations.filter(d => d.kind === "class"
+      && this.bindings.get(d.name)?.has(path) && this.modelOwner(d.name, path, new Set()));
+    return models?.length === 1 ? models[0].name : null;
+  }
+
+  private throughTarget(ref: Reference): string | null {
+    const {owner, reflection, through} = ref;
+    if (!owner || !reflection || !through || this.dynamicReflections.has(owner)) return null;
+    const own = this.reflections.get(owner);
+    if (own?.get(reflection.name) !== ref || this.inheritedReflection(owner, reflection.name)
+      || this.inheritedReflection(owner, through.join)) return null;
+    const join = own.get(through.join);
+    if (!join?.reflection || join.through || reflection.macro === "has_one" && !["belongs_to", "has_one"].includes(join.reflection.macro)) return null;
+    const resolve = (reference: string, r: Reference, path: string) => this.lookupConstant(reference, {
+      association: true, nesting: r.nesting, line: r.line, path,
+    }, "strict")?.target;
+    const joinPath = resolve(join.reference, join, join.reflection.path);
+    if (!joinPath || joinPath === reflection.path) return null;
+    const joinOwner = this.uniqueModelAt(joinPath);
+    if (!joinOwner || this.dynamicReflections.has(joinOwner) || through.sources.some(name => this.inheritedReflection(joinOwner, name))) return null;
+    const available = this.reflections.get(joinOwner);
+    const names = through.sources.filter(name => available?.has(name));
+    const source = names.length === 1 && available?.get(names[0]);
+    if (!source || source.through || !source.reflection || source.reflection.path !== joinPath) return null;
+    const endpoint = resolve(source.reference, source, joinPath);
+    // The through reflection computes its class from the outer model. Require
+    // the same file as the source reflection even when namespaces differ.
+    return endpoint && this.uniqueModelAt(endpoint) && resolve(through.override ?? source.reference, ref, reflection.path) === endpoint ? endpoint : null;
+  }
+
   getDependencies(path: string): DependencyFact[] {
     const cached = this.dependencyCache.get(path);
     if (cached) return cached;
@@ -693,6 +772,14 @@ export class RubyDependencyResolver {
       }
       if (ref.kind === "association" && ref.owner && !this.modelOwner(ref.owner, path, new Set())) {
         this.addDiagnostic({path, code:"unsupported_association_context", line:ref.line, message:`Association owner ${ref.owner} is not a known ActiveRecord model or model concern`});
+        continue;
+      }
+      if (ref.through) {
+        const target = this.throughTarget(ref);
+        if (!target) this.addDiagnostic({path, code: "unsupported_association", line: ref.line,
+          message: "Through association lacks two unique, local direct model reflections"});
+        else if (target !== path) found.push({target, type: "depends_on", kind: "association", line: ref.line,
+          reference: ref.displayReference, resolution: "inferred"});
         continue;
       }
       const match = this.lookupConstant(ref.reference, {

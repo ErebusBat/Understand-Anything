@@ -728,6 +728,60 @@ describe("bounded Rails dependency resolver", () => {
     ]));
   });
 
+  describe("two-hop through associations", () => {
+    const consumer = "app/models/admin/team.rb";
+    const join = "app/models/admin/membership.rb";
+    const target = "app/models/person.rb";
+    const files = {
+      [consumer]: `module Admin; class Team < ApplicationRecord
+        has_many :links, class_name: "Membership"
+        has_many :people, through: :links
+        has_many :admins, through: :links, source: :person
+      end; end`,
+      [join]: `module Admin; class Membership < ApplicationRecord; belongs_to :person, class_name: "::Person"; end; end`,
+      [target]: "class Person < ApplicationRecord; end",
+    };
+    const resolveThrough = (sources: Record<string, string>) => setup(sources).resolver.getDependencies(consumer)
+      .filter(f => f.kind === "association" && f.reference?.includes("through:"));
+
+    it("follows explicit and inferred source names in namespace-aware local direct reflections", () => {
+      const facts = resolveThrough(files);
+      expect(facts).toHaveLength(2);
+      expect(facts.map(f => [f.target, f.line, f.resolution])).toEqual([[target, 4, "inferred"], [target, 3, "inferred"]]);
+    });
+
+    it("uses an explicit source even when the through name cannot be singularized", () => {
+      const source = files[consumer].replace("has_many :people, through: :links", "has_many :menus, through: :links, source: :person");
+      expect(resolveThrough({...files, [consumer]: source})).toHaveLength(2);
+      expect(resolveThrough({...files, [consumer]: source.replace("menus, through: :links, source: :person", "menus, through: :links")})).toHaveLength(1);
+    });
+
+    it.each([
+      ["polymorphic source", "belongs_to :person, polymorphic: true"],
+      ["ambiguous source names", "belongs_to :person; has_many :people"],
+      ["unsupported override", "belongs_to :person; belongs_to :person, **dynamic"],
+      ["nested source", "has_one :person, through: :other"],
+      ["missing source", "belongs_to :someone_else"],
+    ])("rejects a %s", (_, declaration) => {
+      const unqualified = files[consumer].replace('has_many :admins, through: :links, source: :person', '');
+      expect(resolveThrough({...files, [consumer]: unqualified,
+        [join]: `module Admin; class Membership < ApplicationRecord; ${declaration}; end; end`,
+      })).toEqual([]);
+    });
+
+    it("rejects local ancestor overrides, wrong class_name, namespace disagreements and recursive chains", () => {
+      expect(resolveThrough({...files, "app/models/base.rb": "class Base < ApplicationRecord; belongs_to :person; end",
+        [join]: files[join].replace("< ApplicationRecord", "< Base"),
+      })).toEqual([]);
+      expect(resolveThrough({...files, [consumer]: files[consumer].replaceAll("through: :links", "through: :links, class_name: 'Membership'")})).toEqual([]);
+      expect(resolveThrough({...files, [consumer]: files[consumer].replace("class_name: \"Membership\"", "through: :people")})).toEqual([]);
+      expect(resolveThrough({...files, "app/models/admin/person.rb": "module Admin; class Person < ApplicationRecord; end; end",
+        [join]: files[join].replace("::Person", "Person"), [consumer]: files[consumer].replace("module Admin; class Team", "class Admin::Team")
+          .replace("end; end", "end").replaceAll("through: :links", "through: :links, class_name: '::Person'"),
+      })).toEqual([]);
+    });
+  });
+
   it("rejects polymorphic, through, dynamic options/scopes and arbitrary DSL methods", () => {
     const {resolver} = setup({
       "app/models/person.rb":"class Person < ApplicationRecord; end",
