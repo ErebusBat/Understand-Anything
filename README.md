@@ -330,6 +330,8 @@ The graph is just JSON — **commit it once, and teammates skip the pipeline**. 
 
 **Keep it fresh:** enable `/understand --auto-update` — a post-commit hook incrementally patches the graph so each commit lands with a matching graph. Or re-run `/understand` manually before releases.
 
+For branch-local analysis, you can seed each new worktree from an existing graph at its starting commit or a verified ancestor. [Worktree setup and cleanup](docs/incremental/worktree-graphs.md)
+
 **Large graphs (10 MB+):** track with **git-lfs**.
 
 ```bash
