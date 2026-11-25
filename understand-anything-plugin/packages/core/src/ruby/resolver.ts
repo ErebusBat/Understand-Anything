@@ -85,6 +85,7 @@ export class RubyDependencyResolver {
   private sortedDiagnosticCount = 0;
   readonly failures: RubyDependencyFailure[] = [];
   readonly isRails: boolean;
+  readonly applicationRootKnown: boolean;
   readonly configuration: RubyConfiguration;
   private readonly facts = new Map<string, RubyFileFacts>();
   private readonly bindings = new Map<string, Set<string>>();
@@ -132,7 +133,8 @@ export class RubyDependencyResolver {
         if (autoloadable) this.indexIncomplete = true;
       }
     }
-    this.isRails = [...trees.values()].some(t => t.application || t.engines);
+    this.applicationRootKnown = trees.get("config/application.rb")?.application ?? false;
+    this.isRails = this.applicationRootKnown || [...trees.values()].some(t => t.engines);
     const classicMajor = trees.get("config/application.rb")?.application ? gemfileMajor : undefined;
     this.configuration = initialRubyConfiguration(autoloadPaths, this.isRails, classicMajor);
     if (!this.isRails) return;
@@ -158,7 +160,7 @@ export class RubyDependencyResolver {
       if (configPrefixes.some(prefix => path.startsWith(prefix + "initializers/"))) this.initializerPaths.add(path);
       if (configPrefixes.some(prefix => path.startsWith(prefix)) || trees.get(path)?.engines) {
         plugin.withSyntaxTree(path, source, root => readRubyConfiguration(path, root, this.configuration, this.collectedDiagnostics, {
-          projectRoot, applicationRootKnown:[...trees.values()].some(t => t.application), engineRoot:engineRoots.get(path),
+          projectRoot, applicationRootKnown:this.applicationRootKnown, engineRoot:engineRoots.get(path),
         }));
       }
     }

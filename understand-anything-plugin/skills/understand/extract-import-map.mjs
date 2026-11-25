@@ -97,7 +97,7 @@ try {
 const {
   TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers,
   createRubyWorkspaceDependencyResolver, RUBY_DEPENDENCY_RESOLVER_VERSION, loadRubyMixinResolution,
-  rubyCall, rubyConstant, rubyLiteral, walkRuby,
+  rubyCall, rubyLiteral, collectRubyFileLoads,
 } = core;
 
 // ---------------------------------------------------------------------------
@@ -1477,22 +1477,9 @@ export function resolveSwiftImport(rawImport, file, ctx) {
 //
 // The general structure extractor drops the distinction between require and
 // require_relative. Inspect the actual call and its literal argument here.
-function parseRubyImports(plugin, path, content) {
+function parseRubyImports(plugin, path, content, railsRoot) {
   if (!content.includes('require')) return [];
-  return plugin.withSyntaxTree(path, content, root => {
-    const imports = [];
-    walkRuby(root, node => {
-      const call = rubyCall(node);
-      if (!call || (call.method !== 'require' && call.method !== 'require_relative')
-        || call.block || call.args.length !== 1 || call.args[0].type !== 'string') return;
-      if (call.receiver && rubyConstant(call.receiver)?.replace(/^::/, '') !== 'Kernel') return;
-      const source = rubyLiteral(call.args[0]);
-      if (typeof source === 'string' && source.length) {
-        imports.push({ kind: call.method === 'require_relative' ? 'relative' : 'absolute', source });
-      }
-    });
-    return imports;
-  });
+  return plugin.withSyntaxTree(path, content, root => collectRubyFileLoads(root, path, railsRoot));
 }
 
 /**
@@ -1506,6 +1493,12 @@ export function resolveRubyImport({ kind, source }, file, ctx) {
   if (!source || source.startsWith('/') || /^[a-z]:/i.test(source) || source.includes('\\')) return [];
   const importerDir = dirOf(toPosix(file.path));
   const withExt = source.endsWith('.rb') ? source : source + '.rb';
+
+  if (kind === 'computed') {
+    if ((posix.extname(source) && !source.endsWith('.rb'))
+      || !ctx.fileSet.has(withExt) || ctx.rubyRootFor(withExt) !== ctx.rubyRootPrefix) return [];
+    return [withExt];
+  }
 
   if (kind === 'relative') {
     const base = resolveRelative(importerDir, withExt);
@@ -2131,8 +2124,8 @@ async function main() {
       // resolver reads those calls directly from the Ruby AST. All other tree-sitter
       // languages get analyzed once and dispatched normally.
       if (file.language === 'ruby') {
-        const rubyContext = { ...ctx, rubyRootPrefix: rubyResolver?.rootPrefixFor(path) ?? '' };
-        for (const imp of parseRubyImports(tsPlugin, path, content)) {
+        const rubyContext = { ...ctx, rubyRootPrefix: rubyResolver.rootPrefixFor(path), rubyRootFor: target => rubyResolver.rootPrefixFor(target) };
+        for (const imp of parseRubyImports(tsPlugin, path, content, rubyResolver.railsRootFor(path))) {
           for (const out of resolveRubyImport(imp, file, rubyContext)) {
             if (out && ctx.fileSet.has(out) && (!out.endsWith('.rb') || rubyResolver?.sources.has(out))) resolvedSet.add(out);
           }

@@ -108,6 +108,12 @@ export class RubyWorkspaceDependencyResolver {
     return this.prefixes.find(prefix => path.startsWith(prefix)) ?? "";
   }
 
+  /** Rails.root belongs to the host application, including code inside a hosted engine. */
+  railsRootFor(path: string): string | null {
+    const owner = this.owners.get(path);
+    return owner?.resolver.applicationRootKnown ? owner.prefix : null;
+  }
+
   get diagnostics(): DependencyDiagnostic[] {
     const all = [...this.contextDiagnostics, ...this.projects.flatMap(({prefix, resolver}) =>
       resolver.diagnostics.map(d => ({
