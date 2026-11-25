@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { RubyDependencyResolver, type RubyDependencyResolverOptions } from "./resolver.js";
+import { isResqueSchedulePath, resqueScheduleDependencies } from "./resque-schedule.js";
 import { RailsViewResolver } from "./rails-views.js";
 import { extractRailsRouteDependencies } from "./rails-routes.js";
 import type { DependencyDiagnostic, DependencyFact, RubyDependencyFailure, RubyInventoryFile } from "./types.js";
@@ -9,6 +10,7 @@ interface Context {
   prefix: string;
   resolver: RubyDependencyResolver;
   views: RailsViewResolver;
+  schedules: Map<string, DependencyFact[]>;
 }
 
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
@@ -51,8 +53,17 @@ export class RubyWorkspaceDependencyResolver {
       group.push({...file, path: file.path.slice(prefix.length)});
       groups.set(prefix, group);
     }
+    const schedulePaths = new Map<string, string[]>();
     const viewPaths = new Map<string, Set<string>>();
     for (const file of options.files) {
+      if (isResqueSchedulePath(file.path)) {
+        const prefix = this.rootPrefixFor(file.path);
+        const localPath = file.path.slice(prefix.length);
+        if (localPath.startsWith("config/")) {
+          if (!schedulePaths.has(prefix)) schedulePaths.set(prefix, []);
+          schedulePaths.get(prefix)!.push(localPath);
+        }
+      }
       if (!file.path.includes("app/views/")) continue;
       const prefix = this.rootPrefixFor(file.path);
       const path = file.path.slice(prefix.length);
@@ -80,8 +91,10 @@ export class RubyWorkspaceDependencyResolver {
       }
       const resolver = new RubyDependencyResolver({...options, projectRoot, files: inventory});
       const views = new RailsViewResolver([...(viewPaths.get(prefix) ?? [])], projectRoot, resolver, options.plugin);
-      const context = {prefix, resolver, views};
+      const schedules = resqueScheduleDependencies(schedulePaths.get(prefix) ?? [], projectRoot, resolver, options.plugin);
+      const context = {prefix, resolver, views, schedules};
       this.projects.push(context);
+      for (const path of schedules.keys()) this.owners.set(prefix + path, context);
       for (const {path} of inventory) this.owners.set(prefix + path, context);
       for (const path of viewPaths.get(prefix) ?? []) this.owners.set(prefix + path, context);
       for (const [path, source] of resolver.sources) this.sources.set(prefix + path, source);
@@ -133,7 +146,8 @@ export class RubyWorkspaceDependencyResolver {
     if (!context) return [];
     const {prefix, resolver} = context;
     const localPath = path.slice(prefix.length);
-    const facts = [...resolver.getDependencies(localPath), ...context.views.dependencies(localPath)];
+    const facts = [...resolver.getDependencies(localPath), ...context.views.dependencies(localPath),
+      ...(context.schedules.get(localPath) ?? [])];
     const source = resolver.sources.get(localPath);
     if (source !== undefined && resolver.isRails && /(^|\/)config\/routes\.rb$/.test(localPath)) {
       const routes = extractRailsRouteDependencies({

@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
-import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
+import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubySelfSingletonClass, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { classicRailsMajor, detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
 import { RubySpecRegistry } from "./spec-registry.js";
 import { DEFAULT_RUBY_MIXIN_RESOLUTION, type DependencyDiagnostic, type DependencyFact, type RubyDependencyFailure, type RubyInventoryFile, type RubyMixinResolution } from "./types.js";
@@ -16,6 +16,7 @@ interface Declaration {
   mixins: string[];
   conditional: boolean;
   wrapsDeclarations?: boolean;
+  performsJob?: boolean;
   valueAssignment?: "name" | "qualified";
 }
 interface Reference {
@@ -60,6 +61,20 @@ const DEVISE_NAMESPACE = /^Devise(?:::|$)/;
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
+
+function declaresJobEntryPoint(body: RubyAstNode, kind: Declaration["kind"]): boolean {
+  const statements = rubyStatements(body);
+  return statements.some((node, index) => {
+    if (rubySelfSingletonClass(node)) {
+      return rubyStatements(node.childForFieldName("body"))
+        .some(method => method.type === "method" && method.childForFieldName("name")?.text === "perform");
+    }
+    if (node.childForFieldName("name")?.text !== "perform") return false;
+    if (node.type === "singleton_method") return node.childForFieldName("object")?.type === "self";
+    const previous = statements[index - 1];
+    return kind === "module" && node.type === "method" && previous?.type === "identifier" && previous.text === "module_function";
+  });
+}
 
 /** Paths are inventory-relative; both spelling and resolved symlinks must remain
  * inside the selected checkout. This function reads no target source. */
@@ -243,6 +258,7 @@ export class RubyDependencyResolver {
         result.declarations.push(declaration);
         if (uncertain) this.addDiagnostic({path, code: "unsupported_declaration_scope", line: declaration.line, message: `Relative qualified declaration ${raw} inside another namespace is unsupported`});
         const body = node.childForFieldName("body");
+        if (body && path.startsWith("app/jobs/")) declaration.performsJob = declaresJobEntryPoint(body, declaration.kind);
         if (body && declaration.kind === "class" && !superclass) {
           const statements = rubyStatements(body);
           declaration.wrapsDeclarations = statements.length > 0 && statements.every(s => s.type === "class" || s.type === "module");
@@ -524,6 +540,15 @@ export class RubyDependencyResolver {
     const targets = this.bindings.get(name);
     if (targets?.size) return targets.size === 1 ? {target: [...targets][0]} : null;
     return required?.name === name ? {target: required.path} : null;
+  }
+
+  /** A scheduler target needs one declared job and an explicit singleton perform. */
+  resolveScheduledJob(name: string): string | null {
+    if (this.inferenceBlocked || this.blockedPrefix(name)) return null;
+    const declarations = this.declarations.get(name);
+    if (declarations?.length !== 1) return null;
+    const job = declarations[0];
+    return job.performsJob && !job.conditional ? job.path : null;
   }
 
   /** Returns a file endpoint only. A known namespace with a missing child

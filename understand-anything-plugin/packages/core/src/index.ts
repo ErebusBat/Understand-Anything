@@ -132,8 +132,9 @@ export {
 export { generateStarterIgnoreFile } from "./ignore-generator.js";
 export * from "./ruby/types.js";
 export * from "./ruby/ast.js";
-export { collectRubyFileLoads } from "./ruby/file-loads.js";
+export { collectRubyFileLoads, rubyFileGlobMatcher } from "./ruby/file-loads.js";
 export * from "./ruby/inflections.js";
 export * from "./ruby/resolver.js";
 export * from "./ruby/workspace-resolver.js";
 export { extractRailsRouteDependencies } from "./ruby/rails-routes.js";
+export { isResqueSchedulePath } from "./ruby/resque-schedule.js";

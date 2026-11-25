@@ -97,7 +97,7 @@ try {
 const {
   TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers,
   createRubyWorkspaceDependencyResolver, RUBY_DEPENDENCY_RESOLVER_VERSION, loadRubyMixinResolution,
-  rubyCall, rubyLiteral, collectRubyFileLoads,
+  rubyCall, rubyLiteral, collectRubyFileLoads, rubyFileGlobMatcher, isResqueSchedulePath,
 } = core;
 
 // ---------------------------------------------------------------------------
@@ -1527,18 +1527,11 @@ export function resolveRubyImport({ kind, source }, file, ctx) {
  * symlinked directories. Checking the canonical spelling also excludes links
  * into another application. No directories or file contents are enumerated. */
 function resolveRubyGlob(load, ctx) {
-  const parts = load.source.split('/');
-  const suffix = /^\*\.([a-zA-Z0-9]+)$/.exec(parts.pop());
-  if (!suffix || (load.kind === 'require_glob' && suffix[1] !== 'rb')) return [];
-  const recursive = parts.at(-1) === '**';
-  if (recursive) parts.pop();
-  if (parts.some(part => !part || part === '.' || part === '..' || /[?*{}[\]]/.test(part))) return [];
-  const prefix = parts.length ? parts.join('/') + '/' : '';
+  const matches = rubyFileGlobMatcher(load.source, load.kind === 'require_glob');
+  if (!matches) return [];
   const targets = [];
   for (const target of ctx.fileSet) {
-    if (!target.startsWith(prefix) || !target.endsWith('.' + suffix[1]) || ctx.rubyRootFor(target) !== ctx.rubyRootPrefix) continue;
-    const rest = target.slice(prefix.length).split('/');
-    if ((!recursive && rest.length !== 1) || rest.some(part => part.startsWith('.'))) continue;
+    if (!matches(target) || ctx.rubyRootFor(target) !== ctx.rubyRootPrefix) continue;
     const absolute = join(ctx.realProjectRoot, target);
     try {
       if (realpathSync(absolute) === absolute) targets.push(target);
@@ -2092,7 +2085,7 @@ async function main() {
   const dependencyMap = {};
   for (const file of [...analysisFiles].sort((a, b) => comparePaths(a.path, b.path))) {
     const path = toPosix(file.path);
-    dependencyMap[path] = file.language === 'ruby' || (file.fileCategory === 'code' && path.endsWith('.rb')) || path.includes('app/views/')
+    dependencyMap[path] = file.language === 'ruby' || (file.fileCategory === 'code' && path.endsWith('.rb')) || path.includes('app/views/') || isResqueSchedulePath(path)
       ? rubyResolver?.getDependencies(path) ?? []
       : [];
   }

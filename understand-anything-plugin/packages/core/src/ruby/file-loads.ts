@@ -177,3 +177,20 @@ export function collectRubyFileLoads(root: RubyAstNode, file: string, railsRoot:
   }
   return imports;
 }
+
+/** Match inventory paths with the literal directory, recursion and extension
+ * rules shared by Ruby glob consumers and configuration-provider evidence. */
+export function rubyFileGlobMatcher(source: string, rubyOnly = false): ((path: string) => boolean) | null {
+  const parts = source.split("/");
+  const suffix = /^\*\.([a-zA-Z0-9]+)$/.exec(parts.pop()!);
+  if (!suffix || (rubyOnly && suffix[1] !== "rb")) return null;
+  const recursive = parts.at(-1) === "**";
+  if (recursive) parts.pop();
+  if (parts.some(part => !part || part === "." || part === ".." || /[?*{}[\]]/.test(part))) return null;
+  const prefix = parts.length ? parts.join("/") + "/" : "";
+  return path => {
+    if (!path.startsWith(prefix) || !path.endsWith("." + suffix[1])) return false;
+    const rest = path.slice(prefix.length).split("/");
+    return (recursive || rest.length === 1) && rest.every(part => !part.startsWith("."));
+  };
+}
