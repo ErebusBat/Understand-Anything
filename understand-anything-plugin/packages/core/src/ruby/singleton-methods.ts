@@ -1,11 +1,18 @@
 import { rubyCall, rubyLiteral, rubySelfSingletonClass, rubyStatements, type RubyAstNode } from "./ast.js";
 
-/** Only ordinary, directly defined singleton methods corroborate a receiver.
- * Instance methods, inherited methods, conditional declarations and method
- * factories can all give the same selector to unrelated receiver objects. */
-export function publicSingletonMethods(body: RubyAstNode): Set<string> | undefined {
+interface MethodEvidence {
+  publicSingleton?: Set<string>;
+  unavailableSingleton?: Set<string> | "unknown";
+  declaresInitializer?: boolean;
+}
+
+/** Only direct method declarations supply evidence for a receiver. Keep
+ * visibility changes as counterevidence to inherited framework methods. */
+export function rubyMethodEvidence(body: RubyAstNode): MethodEvidence | undefined {
   const methods = new Set<string>(), hidden = new Set<string>();
+  let declaresInitializer = false;
   for (const node of rubyStatements(body)) {
+    if (node.type === "method" && node.childForFieldName("name")?.text === "initialize") declaresInitializer = true;
     const singleton = rubySelfSingletonClass(node);
     let isPublic = true;
     for (const member of singleton ? rubyStatements(node.childForFieldName("body")) : [node]) {
@@ -20,18 +27,22 @@ export function publicSingletonMethods(body: RubyAstNode): Set<string> | undefin
         else hidden.add(name);
         continue;
       }
-      if (singleton && member.type === "undef") return undefined;
+      if (singleton && member.type === "undef") return {unavailableSingleton: "unknown"};
       const call = rubyCall(member);
       const modifiers = singleton ? ["private", "protected", "remove_method", "undef_method"] : ["private_class_method"];
       if (call && (!call.receiver || call.receiver.type === "self") && modifiers.includes(call.method)) {
         for (const arg of call.args) {
           const selector = ["method", "singleton_method"].includes(arg.type) ? arg.childForFieldName("name")?.text : rubyLiteral(arg);
-          if (typeof selector !== "string") return undefined;
+          if (typeof selector !== "string") return {unavailableSingleton: "unknown"};
           hidden.add(selector);
         }
       }
     }
   }
   for (const name of hidden) methods.delete(name);
-  return methods.size ? methods : undefined;
+  return methods.size || hidden.size || declaresInitializer ? {
+    publicSingleton: methods.size ? methods : undefined,
+    unavailableSingleton: hidden.size ? hidden : undefined,
+    declaresInitializer,
+  } : undefined;
 }

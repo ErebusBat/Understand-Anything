@@ -4,7 +4,7 @@ import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubySelfSingletonClass, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { classicRailsMajor, detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
 import { grapeDependencyArguments } from "./grape-api.js";
-import { publicSingletonMethods } from "./singleton-methods.js";
+import { rubyMethodEvidence } from "./singleton-methods.js";
 import { RubyTestSuites } from "./spec-registry.js";
 import { DEFAULT_RUBY_MIXIN_RESOLUTION, type DependencyDiagnostic, type DependencyFact, type RubyDependencyFailure, type RubyInventoryFile, type RubyMixinResolution } from "./types.js";
 
@@ -20,7 +20,7 @@ interface Declaration {
   wrapsDeclarations?: boolean;
   concernBase?: string;
   performsJob?: boolean;
-  singletonMethods?: Set<string>;
+  methods?: ReturnType<typeof rubyMethodEvidence>;
   valueAssignment?: "name" | "qualified";
 }
 interface Reference {
@@ -65,6 +65,12 @@ export interface RubyResolveOptions {
 }
 
 const ASSOCIATIONS = new Set(["belongs_to", "has_one", "has_many", "has_and_belongs_to_many"]);
+const ACTIVE_RECORD_CLASS_METHODS = new Set([
+  "new", "create", "create!", "find", "find_by", "find_by!", "find_each", "find_in_batches",
+  "find_or_create_by", "find_or_create_by!", "find_or_initialize_by", "first", "last", "exists?",
+  "all", "where", "unscoped", "includes", "joins", "preload", "eager_load", "order", "limit",
+  "group", "having", "pluck", "count", "transaction", "update_all", "delete_all", "destroy_all",
+]);
 const CONDITIONAL = new Set(["if", "unless", "if_modifier", "unless_modifier", "case", "case_match", "conditional", "while", "until", "while_modifier", "until_modifier", "for", "rescue", "rescue_modifier", "ensure", "begin"]);
 const FRAMEWORK_BASES = new Set(["ActiveRecord::Base", "ActionController::Base", "ActionController::API", "ActionMailer::Base", "ActiveJob::Base", "Object", "BasicObject"]);
 const DEVISE_NAMESPACE = /^Devise(?:::|$)/;
@@ -292,7 +298,7 @@ export class RubyDependencyResolver {
         if (body && !declaration.conditional && declaration.superclass?.replace(/^::/, "") === "Grape::API") {
           for (const {node, kind} of grapeDependencyArguments(body)) reference(node, [name, ...nesting], kind, name);
         }
-        if (body && !declaration.conditional) declaration.singletonMethods = publicSingletonMethods(body);
+        if (body && !declaration.conditional) declaration.methods = rubyMethodEvidence(body);
         if (body && path.startsWith("app/jobs/")) declaration.performsJob = declaresJobEntryPoint(body, declaration.kind);
         if (body && declaration.kind === "class" && !superclass) {
           const statements = rubyStatements(body);
@@ -663,12 +669,15 @@ export class RubyDependencyResolver {
     if (!scope || !call || !options.path || DEVISE_NAMESPACE.test(reference)) return null;
     const definitions = this.declarations.get(reference);
     if (definitions?.length !== 1) return null;
-    const target = definitions[0].path;
-    // The class_name option corroborates a receiver that is itself a known
-    // local Active Record model. Other calls need a directly declared method.
-    if (options.macroTarget === "associationClassName") {
-      if (!/(?:^|\/)app\/models\//.test(target) || !this.modelOwner(reference, target, new Set())) return null;
-    } else if (!definitions[0].singletonMethods?.has(call.method)) return null;
+    const definition = definitions[0];
+    const target = definition.path;
+    if (!definition.methods?.publicSingleton?.has(call.method)) {
+      if (definition.kind !== "class") return null;
+      const constructor = call.method === "new" && definition.methods?.declaresInitializer;
+      const modelMethod = options.macroTarget === "associationClassName" || ACTIVE_RECORD_CLASS_METHODS.has(call.method);
+      if (!constructor && !(modelMethod && /(?:^|\/)app\/models\//.test(target) && this.modelOwner(reference, target, new Set()))) return null;
+      if (this.overridesClassMethod(reference, call.method)) return null;
+    }
     if (target === options.path || !this.bindings.get(reference)?.has(target)) return null;
 
     const first = reference.split("::")[0];
@@ -852,17 +861,19 @@ export class RubyDependencyResolver {
     const path = ref.reflection!.path;
     const name = this.lexicalName(ref.reference, nesting, this.consumerDeclarations.get(path));
     const declarations = this.declarations.get(name);
-    if (declarations?.length !== 1 || declarations[0].kind !== "class" || this.overridesClassName(name, method)) return null;
+    if (declarations?.length !== 1 || declarations[0].kind !== "class" || this.overridesClassMethod(name, method)) return null;
     const target = this.lookupConstant(ref.reference, {nesting, path, line: ref.line,
       macroTarget: "associationClassName", receiverCall: {method, offset: ref.classNameCall.offset}}, this.mixinResolution)?.target;
     return target === declarations[0].path && this.bindings.get(name)?.has(target) ? name : null;
   }
 
-  private overridesClassName(name: string, method: string, seen = new Set<string>()): boolean {
+  private overridesClassMethod(name: string, method: string, seen = new Set<string>()): boolean {
     if (seen.has(name) || this.blockedPrefix(name)) return true;
     seen.add(name);
-    return (this.declarations.get(name) ?? []).some(d => d.singletonMethods?.has(method)
-      || !!d.superclass && this.overridesClassName(this.lexicalName(d.superclass, d.nesting), method, new Set(seen)));
+    return (this.declarations.get(name) ?? []).some(d =>
+      d.methods?.publicSingleton?.has(method) || d.methods?.unavailableSingleton === "unknown" || d.methods?.unavailableSingleton?.has(method)
+      || method === "new" && d.mixins.some(m => m.replace(/^::/, "") === "Singleton")
+      || !!d.superclass && this.overridesClassMethod(this.lexicalName(d.superclass, d.nesting), method, new Set(seen)));
   }
 
   private throughTarget(ref: Reference): string | null {

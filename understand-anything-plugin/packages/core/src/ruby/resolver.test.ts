@@ -984,6 +984,35 @@ describe("bounded Rails dependency resolver", () => {
         expect(resolver.getDependencies(path).filter(f => f.target === target)).toEqual([]);
       }
     });
+
+    it("corroborates constructors and standard query calls on known local classes", () => {
+      const {resolver, inventory, root} = setup({
+        "app/services/invoice.rb": "class Invoice; def initialize(total); end; end",
+        "app/services/hidden.rb": "class Hidden; def initialize; end; private_class_method :new; end",
+        "app/services/only.rb": "class Only; include Singleton; def initialize; end; end",
+        "app/models/person.rb": "class Person < ApplicationRecord; private_class_method :find; end",
+        "app/models/plain.rb": "class Plain; end",
+        "app/models/concerns/trackable.rb": "module Trackable; end",
+        [path]: `class Reporter < External
+          Invoice.new(10)
+          Person.where(active: true)
+          Person.create!
+          Person.new
+          Person.find(1)
+          Person.find_by_unverified_attribute(42)
+          Plain.new
+          Plain.where(active: true)
+          Trackable.new
+          Hidden.new
+          Only.new
+        end`,
+      });
+      const inferred = resolver.getDependencies(path);
+      expect(inferred.map(f => f.reference).sort()).toEqual(["Invoice.new", "Person.create!", "Person.new", "Person.where"]);
+      expect(inferred.every(f => f.resolution === "inferred")).toBe(true);
+      const strict = createRubyDependencyResolver({projectRoot: root, files: inventory, plugin, mixinResolution: "strict"});
+      expect(strict.getDependencies(path)).toEqual([]);
+    });
   });
 
   it("reports unknown ancestor lookup instead of fabricating a top-level fallback", () => {
