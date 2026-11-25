@@ -826,11 +826,17 @@ async function main() {
     const contentHead = (scanned.bytes[0] === 0x23 && scanned.bytes[1] === 0x21) || /^Dockerfile[-_]/.test(basename(rel))
       ? scanned.bytes.toString('utf8', 0, 256) : undefined;
     const language = detectLanguage(rel, contentHead);
+    // Only a prefilter for incremental fingerprint migration. The Ruby parser
+    // determines whether a concern hook actually declares methods.
+    const rubyConcernHookCandidate = language === 'ruby' && scanned.bytes.includes('ActiveSupport')
+      && scanned.bytes.includes('Concern') && scanned.bytes.includes('def')
+      && (scanned.bytes.includes('included') || scanned.bytes.includes('class_methods'));
     fileEntries.push({
       path: rel,
       language,
       sizeLines: scanned.sizeLines,
       fileCategory: detectCategory(rel, language),
+      ...(rubyConcernHookCandidate ? {rubyConcernHookCandidate: true} : {}),
     });
   }
 

@@ -570,6 +570,47 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     expect(readGraph().edges).not.toContainEqual(expect.objectContaining(pair));
   });
 
+  it('reanalyzes unchanged files with newly extractable concern hook methods on a legacy baseline', () => {
+    const path = 'lib/features/trackable.rb';
+    const lookalike = 'app/models/ordinary.rb';
+    const f = railsFixture({
+      [path]: `module Trackable
+        extend ::ActiveSupport::Concern
+        included { def installed; end }
+        class_methods { def lookup; end }
+      end`,
+      [lookalike]: "class Ordinary; def included; end; end # ActiveSupport::Concern",
+    });
+    const scan = f.read('scan-result.json');
+    for (const file of scan.files) delete file.rubyConcernHookCandidate;
+    f.write('scan-result.json', scan);
+    const fingerprintPath = join(f.root, '.ua', 'fingerprints.json');
+    const fingerprints = JSON.parse(readFileSync(fingerprintPath, 'utf8'));
+    fingerprints.files[path].functions = [];
+    writeFileSync(fingerprintPath, JSON.stringify(fingerprints));
+
+    const result = prepare(f.root, f.baseCommit);
+    expect(result.plan.action).toBe('PARTIAL_UPDATE');
+    expect(result.changedFiles).toEqual([path]);
+    const patch = f.read('fingerprint-patch.json').files;
+    expect(Object.keys(patch).sort()).toEqual([lookalike, path]);
+    expect(patch[path].contentHash).toBe(fingerprints.files[path].contentHash);
+    expect(patch[path].functions.map(fn => fn.name)).toEqual(['installed', 'lookup']);
+    // Preparing twice must use the old scan until the graph is published.
+    expect(prepare(f.root, f.baseCommit).changedFiles).toEqual([path]);
+
+    const file = f.read('incremental-symbol-baseline.json').files[0].nodes[0];
+    const methods = patch[path].functions.map(fn => ({
+      ...file, id: `function:${path}:${fn.name}`, type: 'function', name: fn.name,
+    }));
+    f.write('batch-1.json', {nodes: [file, ...methods], edges: []});
+    run(python, [mergeScript, f.root], f.root);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    const graph = JSON.parse(readFileSync(join(f.root, '.ua', 'knowledge-graph.json'), 'utf8'));
+    expect(graph.nodes.map(node => node.id)).toEqual(expect.arrayContaining(methods.map(method => method.id)));
+    expect(prepare(f.root, f.baseCommit).plan.action).toBe('SKIP');
+  });
+
   it('refreshes application-scoped requires when upgrading the workspace resolver', () => {
     const consumer = 'service/master/app/services/report.rb';
     const f = setupRepository({

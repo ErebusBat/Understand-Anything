@@ -717,10 +717,14 @@ async function main() {
     ...currentInventory.filter(path => !oldInventorySet.has(path)),
     ...reclassifiedPaths,
   ]);
+  const legacyConcernCandidates = currentScan.files
+    .filter(file => file.rubyConcernHookCandidate && !previousFiles.get(file.path)?.rubyConcernHookCandidate
+      && oldInventorySet.has(file.path))
+    .map(file => file.path);
 
   const currentFingerprints = await buildCurrentFingerprints(
     projectRoot,
-    currentChangedPaths,
+    sorted([...currentChangedPaths, ...legacyConcernCandidates]),
     headCommit,
   );
   const analysis = analyzeInventoryChanges({
@@ -737,12 +741,30 @@ async function main() {
     oldInventory,
     currentInventory,
   );
+  // Old extractors omitted direct defs in concern hooks entirely. Compare the
+  // function counts even on identical bytes (the regular classifier skips them).
+  // A parser upgrade alone does not change application architecture or require
+  // a full rebuild when many concerns gain methods at the same time.
+  const upgradedConcerns = legacyConcernCandidates.filter(path => {
+    const previous = oldFingerprints.files[path];
+    const current = currentFingerprints.files[path];
+    return !previous?.hasStructuralAnalysis || !current?.hasStructuralAnalysis
+      || current.functions.length > previous.functions.length;
+  });
+  if (upgradedConcerns.length) {
+    decision.filesToReanalyze = sorted([...decision.filesToReanalyze, ...upgradedConcerns]);
+    if (decision.action === 'SKIP') {
+      decision.action = 'PARTIAL_UPDATE';
+      decision.reason = 'Reanalyze Rails concern methods exposed by the structural extractor upgrade';
+    }
+  }
 
   const onlyGeneratedArtifacts =
     generatedArtifactFiles.length > 0
     && nonGeneratedDiffPaths.length === 0
     && deletedFiles.length === 0
-    && currentChangedPaths.length === 0;
+    && currentChangedPaths.length === 0
+    && upgradedConcerns.length === 0;
   if (decision.action === 'SKIP') {
     if (onlyGeneratedArtifacts) {
       decision.reason = 'Only generated analysis artifacts changed; baseline not advanced';
