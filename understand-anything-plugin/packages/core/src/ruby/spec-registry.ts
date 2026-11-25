@@ -25,6 +25,13 @@ function inExampleGroup(node: RubyAstNode): boolean {
 }
 
 const factoryUses = new Set(["create", "create_list", "build", "build_list", "build_stubbed", "build_stubbed_list", "attributes_for", "attributes_for_list"]);
+const factoryRegistries = ["FactoryBot", "FactoryGirl"] as const;
+type FactoryRegistry = typeof factoryRegistries[number];
+
+function factoryReceiver(node: RubyAstNode | null): FactoryRegistry | undefined {
+  const name = rubyConstant(node)?.replace(/^::/, "");
+  return factoryRegistries.find(registry => registry === name);
+}
 
 function topLevelBinding(node: RubyAstNode): boolean {
   for (let owner = node.parent; owner; owner = owner.parent) {
@@ -33,19 +40,18 @@ function topLevelBinding(node: RubyAstNode): boolean {
   return true;
 }
 
-function factoryDefinition(node: RubyAstNode): boolean {
+function factoryDefinition(node: RubyAstNode): FactoryRegistry | undefined {
   for (let owner = blockOwner(node); owner; owner = blockOwner(owner)) {
     const call = rubyCall(owner);
-    if (!call) return false;
-    if (call.method === "define" && rubyConstant(call.receiver)?.replace(/^::/, "") === "FactoryBot") {
-      return !call.args.length && owner.parent?.type === "program";
+    if (!call) return;
+    if (call.method === "define" && !call.args.length && owner.parent?.type === "program") {
+      return factoryReceiver(call.receiver);
     }
-    if (call.receiver || call.method !== "factory") return false;
+    if (call.receiver || call.method !== "factory") return;
   }
-  return false;
 }
 
-type Site = {kind: "rspec_shared_group" | "factory"; key: string; reference: string; line: number; bareBuilder?: string};
+type Site = {kind: "rspec_shared_group" | "factory"; registry: "RSpec" | FactoryRegistry; key: string; reference: string; line: number; bareBuilder?: string};
 type Providers = Map<string, string | null>;
 
 /** A second definition, including one with uncertain visibility, rules out
@@ -57,29 +63,30 @@ function register(providers: Providers, key: string, target: string | null): voi
 export class RubySpecRegistry {
   private readonly factorySyntax = new SpecFactorySyntax();
   private readonly shared = new Map<string, string | null>();
-  private readonly factories = new Map<string, string | null>();
+  private readonly factories: Record<FactoryRegistry, Providers> = {FactoryBot: new Map(), FactoryGirl: new Map()};
   private readonly uses = new Map<string, Site[]>();
   private readonly replacedRegistries = new Set<string>();
   private readonly localReplacements = new Map<string, Set<string>>();
-  private factoryNamesComplete = true;
+  private readonly incomplete = new Set<FactoryRegistry>();
 
   readDefaultOptions(content: string): void {
     this.factorySyntax.readDefaultOptions(content);
   }
 
   index(path: string, root: RubyAstNode): void {
-    if (!path.startsWith("spec/") || !path.endsWith(".rb")) return;
-    this.factorySyntax.indexLoads(path, root);
+    if (!/^(spec|test|features)\/.*\.rb$/.test(path)) return;
+    const spec = path.startsWith("spec/");
+    if (spec) this.factorySyntax.indexLoads(path, root);
     const sites: Site[] = [];
-    const factoryFile = path.startsWith("spec/factories/") || path === "spec/factories.rb";
+    const factoryFile = /^(spec|test)\/factories(?:\/|\.rb$)/.test(path);
     walkRuby(root, node => {
-      this.factorySyntax.inspect(path, node, factoryUses);
+      if (spec) this.factorySyntax.inspect(path, node, factoryUses);
       // A local replacement can redirect even explicitly qualified builders.
       const binding = node.type === "class" || node.type === "module" ? node.childForFieldName("name")
         : node.type === "assignment" ? node.childForFieldName("left") : null;
       const qualified = rubyConstant(binding);
       const namePart = qualified?.split("::").pop();
-      if (namePart === "RSpec" || namePart === "FactoryBot") {
+      if ((spec && namePart === "RSpec") || namePart === "FactoryBot" || namePart === "FactoryGirl") {
         if (qualified === "::" + namePart || qualified === namePart && topLevelBinding(node)) {
           this.replacedRegistries.add(namePart);
         } else {
@@ -91,34 +98,42 @@ export class RubySpecRegistry {
       const call = rubyCall(node);
       if (!call) return;
       const {method, receiver, args} = call;
-      if (method === "factory" && !receiver && (factoryFile || factoryDefinition(node))) {
-        const provider = factoryFile && factoryDefinition(node) ? path : null;
+      if (method === "factory" && !receiver) {
+        const definition = factoryDefinition(node);
+        if (!factoryFile && !definition) return;
+        const provider = factoryFile && definition ? path : null;
+        // A declaration under unknown DSL control can collide with either registry.
+        const registries = definition ? [definition] : factoryRegistries;
         const name = rubyLiteral(args[0]);
-        if (typeof name === "string") register(this.factories, name, provider);
-        else this.factoryNamesComplete = false;
+        const names = typeof name === "string" ? [name] : [];
+        let complete = typeof name === "string";
         for (const opt of args.slice(1).flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])) {
-          if (opt.type !== "pair") { this.factoryNamesComplete = false; continue; }
+          if (opt.type !== "pair") { complete = false; continue; }
           if (rubyLiteral(opt.childForFieldName("key")) !== "aliases") continue;
           const aliases = rubyLiteral(opt.childForFieldName("value"));
-          if (!Array.isArray(aliases)) { this.factoryNamesComplete = false; continue; }
+          if (!Array.isArray(aliases)) { complete = false; continue; }
           for (const alias of aliases) {
-            if (typeof alias === "string") register(this.factories, alias, provider);
+            if (typeof alias === "string") names.push(alias);
           }
+        }
+        for (const registry of registries) {
+          if (!complete) this.incomplete.add(registry);
+          for (const key of names) register(this.factories[registry], key, provider);
         }
         return;
       }
       if (factoryUses.has(method)) {
         const name = rubyLiteral(args[0]);
         if (typeof name !== "string") return;
-        const explicit = rubyConstant(receiver)?.replace(/^::/, "") === "FactoryBot";
-        const example = !receiver && exampleForBuilder(node);
+        const explicit = factoryReceiver(receiver);
+        const example = spec && !receiver && exampleForBuilder(node);
         if (explicit || example && inExampleGroup(example)) {
-          sites.push({kind: "factory", key: name, reference: (explicit ? "FactoryBot." : "") + method + " " + args[0].text,
+          sites.push({kind: "factory", registry: explicit ?? "FactoryBot", key: name, reference: (explicit ? explicit + "." : "") + method + " " + args[0].text,
             line: node.startPosition.row + 1, ...(explicit ? {} : {bareBuilder: method})});
         }
         return;
       }
-      if (!sharedDefinitions.has(method) && !sharedUses.has(method)) return;
+      if (!spec || !sharedDefinitions.has(method) && !sharedUses.has(method)) return;
       const name = rubyLiteral(args[0]);
       if (typeof name !== "string") return;
       // RSpec stores string and symbol names as distinct registry keys.
@@ -128,7 +143,7 @@ export class RubySpecRegistry {
         const global = path.startsWith("spec/support/") && node.parent?.type === "program" && !!call.block;
         register(this.shared, key, global ? path : null);
       } else if (!call.receiver && inExampleGroup(node)) {
-        sites.push({kind: "rspec_shared_group", key, reference: call.method + " " + call.args[0].text, line: node.startPosition.row + 1});
+        sites.push({kind: "rspec_shared_group", registry: "RSpec", key, reference: call.method + " " + call.args[0].text, line: node.startPosition.row + 1});
       }
     });
     if (sites.length) this.uses.set(path, sites);
@@ -137,13 +152,12 @@ export class RubySpecRegistry {
   dependencies(path: string, hasRailsRoot = false): DependencyFact[] {
     const facts: DependencyFact[] = [];
     for (const site of this.uses.get(path) ?? []) {
-      const factory = site.kind === "factory";
-      const registry = factory ? "FactoryBot" : "RSpec";
+      const registry = site.registry;
       if (this.replacedRegistries.has(registry) || this.localReplacements.get(path)?.has(registry)
-        || factory && !this.factoryNamesComplete) continue;
+        || registry !== "RSpec" && this.incomplete.has(registry)) continue;
       if (site.bareBuilder && (this.replacedRegistries.has("RSpec") || this.localReplacements.get(path)?.has("RSpec")
         || !this.factorySyntax.available(path, site.bareBuilder, hasRailsRoot))) continue;
-      const target = (factory ? this.factories : this.shared).get(site.key);
+      const target = (registry === "RSpec" ? this.shared : this.factories[registry]).get(site.key);
       if (target && target !== path && !this.localReplacements.get(target)?.has(registry)) {
         facts.push({target, type: "depends_on", kind: site.kind, reference: site.reference, line: site.line, resolution: "inferred"});
       }

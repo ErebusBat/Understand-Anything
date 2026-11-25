@@ -8,13 +8,13 @@ beforeAll(() => plugin.init());
 const spec = "spec/models/item_spec.rb";
 const helper = "spec/support/shared.rb";
 
-function index(files: Record<string, string>, hasRailsRoot = false) {
+function index(files: Record<string, string>, hasRailsRoot = false, consumer = spec) {
   const registry = new RubySpecRegistry();
   for (const [path, source] of Object.entries(files)) {
     if (path === ".rspec") registry.readDefaultOptions(source);
     else plugin.withSyntaxTree(path, source, root => registry.index(path, root));
   }
-  return registry.dependencies(spec, hasRailsRoot);
+  return registry.dependencies(consumer, hasRailsRoot);
 }
 
 describe("RSpec shared registrations", () => {
@@ -98,6 +98,34 @@ describe("FactoryBot registrations", () => {
         end
       end`,
     })).toEqual([]);
+  });
+});
+
+describe("legacy FactoryGirl suites", () => {
+  const factory = "test/factories/cards.rb";
+  const modern = "spec/factories.rb";
+  const suite = {
+    [factory]: "FactoryGirl.define { factory(:card) { factory :active_card, aliases: [:payment_card] } }",
+    [modern]: "FactoryBot.define { factory :card }",
+    [spec]: "FactoryBot.create :card\nFactoryGirl.create :card",
+    "test/unit/card_test.rb": "::FactoryGirl.build(:active_card)",
+    "features/step_definitions/cards.rb": "Given('a card') { FactoryGirl.create :payment_card }",
+  };
+
+  it("resolves each named registry independently in specs, tests and Cucumber steps", () => {
+    expect(index(suite).map(f => [f.target, f.reference])).toEqual([
+      [modern, "FactoryBot.create :card"], [factory, "FactoryGirl.create :card"],
+    ]);
+    for (const consumer of ["test/unit/card_test.rb", "features/step_definitions/cards.rb"]) {
+      expect(index(suite, false, consumer)).toEqual([expect.objectContaining({target: factory, kind: "factory", resolution: "inferred"})]);
+    }
+  });
+
+  it("keeps rebindings and unknown names scoped to their named registry", () => {
+    for (const replacement of ["FactoryGirl = LocalRegistry", "FactoryGirl.define { factory(dynamic_name) }"]) {
+      expect(index({...suite, "test/factories/extra.rb": replacement}).map(f => f.target)).toEqual([modern]);
+    }
+    expect(index({...suite, "test/factories/extra.rb": "FactoryGirl.define { factory :card }"}).map(f => f.target)).toEqual([modern]);
   });
 });
 
