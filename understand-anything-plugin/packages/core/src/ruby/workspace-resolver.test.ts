@@ -74,6 +74,31 @@ describe("Ruby workspace contexts", () => {
     expect(project.resolve().getDependencies("first/" + spec)).toEqual([]);
   });
 
+  it("isolates hosted engines' factories and RSpec configuration from the host", () => {
+    const test = "spec/models/account_spec.rb";
+    const factory = "test/factories/accounts.rb";
+    const engine = "engines/ledger/";
+    const suite = {
+      [factory]: "FactoryGirl.define { factory :account }",
+      "spec/factories.rb": "FactoryBot.define { factory :card }",
+      "spec/spec_helper.rb": "RSpec.configure { |c| c.include FactoryBot::Syntax::Methods }",
+      [test]: "describe Account do; let(:account) { FactoryGirl.create :account }; let(:card) { build :card }; end",
+    };
+    const resolver = fixture({
+      ...app, ...suite, ...nested(engine, suite),
+      [engine + "ledger.gemspec"]: "Gem::Specification.new",
+      [engine + ".rspec"]: "--require spec_helper",
+      [engine + "lib/ledger/engine.rb"]: "module Ledger; class Engine < Rails::Engine; end; end",
+      "engines/unknown/test/factories/other.rb": "FactoryGirl.define { factory :account }",
+      "gems/other/other.gemspec": "Gem::Specification.new",
+      "gems/other/spec/isolated_spec.rb": "FactoryGirl.create :account",
+    }).resolve();
+    expect(resolver.getDependencies(test).filter(f => f.kind === "factory").map(f => f.target)).toEqual([factory]);
+    expect(resolver.getDependencies(engine + test).filter(f => f.kind === "factory").map(f => f.target))
+      .toEqual([engine + "spec/factories.rb", engine + factory]);
+    expect(resolver.getDependencies("gems/other/spec/isolated_spec.rb")).toEqual([]);
+  });
+
   it("uses each application's Gemfile for its own overlapping concern roots", () => {
     const sources = {
       "config/application.rb": application,

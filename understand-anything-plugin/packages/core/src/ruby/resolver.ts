@@ -4,7 +4,7 @@ import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubySelfSingletonClass, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { classicRailsMajor, detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
 import { publicSingletonMethods } from "./singleton-methods.js";
-import { RubySpecRegistry } from "./spec-registry.js";
+import { RubyTestSuites } from "./spec-registry.js";
 import { DEFAULT_RUBY_MIXIN_RESOLUTION, type DependencyDiagnostic, type DependencyFact, type RubyDependencyFailure, type RubyInventoryFile, type RubyMixinResolution } from "./types.js";
 
 interface Declaration {
@@ -31,6 +31,7 @@ interface Reference {
   mixinOffset?: number;
   receiverCall?: {method: string; offset: number};
   reflection?: {name: string; macro: string; path: string};
+  classNameCall?: {method: string; nesting: string[]};
   through?: {join: string; sources: string[]; override?: string};
 }
 interface RubyFileFacts {
@@ -117,7 +118,7 @@ export class RubyDependencyResolver {
   /** A null entry means the reflection is duplicate or is outside the static subset. */
   private readonly reflections = new Map<string, Map<string, Reference | null>>();
   private readonly dynamicReflections = new Set<string>();
-  private readonly specRegistry = new RubySpecRegistry();
+  private readonly specRegistry: RubyTestSuites;
   private readonly initializerPaths = new Set<string>();
   private readonly mixinResolution: RubyMixinResolution;
   private indexIncomplete = false;
@@ -125,11 +126,13 @@ export class RubyDependencyResolver {
   constructor(options: RubyDependencyResolverOptions) {
     const {projectRoot, plugin} = options;
     this.mixinResolution = options.mixinResolution ?? DEFAULT_RUBY_MIXIN_RESOLUTION;
-    if (options.files.some(f => f.path === ".rspec")) {
-      try { this.specRegistry.readDefaultOptions(readFileSync(safeRubySourcePath(projectRoot, ".rspec"), "utf8")); }
-      catch (error) { this.failures.push({path: ".rspec", stage: "ruby-file-read", message: errorMessage(error)}); }
+    this.specRegistry = new RubyTestSuites(options.files);
+    const defaultOptions = /(?:^|\/)\.rspec$/;
+    for (const {path} of options.files.filter(f => defaultOptions.test(f.path))) {
+      try { this.specRegistry.readDefaultOptions(path, readFileSync(safeRubySourcePath(projectRoot, path), "utf8")); }
+      catch (error) { this.failures.push({path, stage: "ruby-file-read", message: errorMessage(error)}); }
     }
-    const paths = [...new Set(options.files.filter(f => f.path !== ".rspec" && (f.path.endsWith(".rb") || f.language === "ruby")).map(f => f.path))].sort(compare);
+    const paths = [...new Set(options.files.filter(f => !defaultOptions.test(f.path) && (f.path.endsWith(".rb") || f.language === "ruby")).map(f => f.path))].sort(compare);
     const autoloadPaths = paths.filter(path => path.endsWith(".rb"));
     const trees = new Map<string, { application: boolean; engines: boolean }>();
     let gemfileMajor: number | undefined;

@@ -165,3 +165,34 @@ export class RubySpecRegistry {
     return facts;
   }
 }
+
+/** A hosted engine shares its application's constants, but runs its own test
+ * suite. Keep registry names, helper loads and ambiguities inside each package. */
+export class RubyTestSuites {
+  private readonly suites = new Map<string, RubySpecRegistry>([["", new RubySpecRegistry()]]);
+  private readonly prefixes: string[];
+
+  constructor(files: readonly {path: string}[]) {
+    for (const {path} of files) {
+      const prefix = path.match(/^(.+\/)(?:[^/]+\.gemspec|Gemfile|\.rspec)$/)?.[1];
+      if (prefix && !this.suites.has(prefix)) this.suites.set(prefix, new RubySpecRegistry());
+    }
+    this.prefixes = [...this.suites.keys()].sort((a, b) => b.length - a.length);
+  }
+
+  readDefaultOptions(path: string, content: string): void {
+    this.suites.get(path.slice(0, -".rspec".length))?.readDefaultOptions(content);
+  }
+
+  index(path: string, root: RubyAstNode): void {
+    const prefix = this.prefixes.find(candidate => path.startsWith(candidate))!;
+    this.suites.get(prefix)!.index(path.slice(prefix.length), root);
+  }
+
+  dependencies(path: string, hasRailsRoot: boolean): DependencyFact[] {
+    const prefix = this.prefixes.find(candidate => path.startsWith(candidate))!;
+    // Rails.root in an engine's tests can designate its dummy app.
+    const facts = this.suites.get(prefix)!.dependencies(path.slice(prefix.length), !prefix && hasRailsRoot);
+    return prefix ? facts.map(fact => ({...fact, target: prefix + fact.target})) : facts;
+  }
+}
