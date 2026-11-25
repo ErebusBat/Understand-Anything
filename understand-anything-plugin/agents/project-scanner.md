@@ -177,7 +177,7 @@ The output JSON has shape:
   },
   "dependencyContexts": [],
   "dependencyDiagnostics": [],
-  "dependencyResolverVersion": 7,
+  "dependencyResolverVersion": 8,
   "rubyMixinResolution": "pragmatic"
 }
 ```
@@ -238,7 +238,7 @@ Then assemble the final output JSON:
   },
   "dependencyContexts": [],
   "dependencyDiagnostics": [],
-  "dependencyResolverVersion": 7,
+  "dependencyResolverVersion": 8,
   "rubyMixinResolution": "pragmatic"
 }
 ```
