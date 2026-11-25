@@ -34,7 +34,7 @@ interface RouteScope {
   resource?: string;
   guards: string[];
 }
-interface RouteSite { node: RubyAstNode; controller: string; reference: string; guards: string[] }
+type RouteSite = { node: RubyAstNode; reference: string; guards: string[] } & ({ controller: string } | { rackApp: string });
 
 const ACTION = /^[a-z_]\w*[!?]?$/;
 const REST_ACTIONS = ["index", "show", "new", "create", "edit", "update", "destroy"];
@@ -193,6 +193,15 @@ function visitRoutes(body: RubyAstNode | null, scope: RouteScope, resolver: Rout
           if (nested) visitRoutes(nested, {...scope, resource: known}, resolver, record, reject);
           continue;
         }
+      } else if (call.method === "mount" && !call.block && first) {
+        const mapped = first.type === "pair";
+        const app = rubyConstant(mapped ? first.childForFieldName("key") : first);
+        const options = routeOptions(rest, mapped ? ["as"] : ["at", "as"]);
+        const location = mapped ? first.childForFieldName("value") : options?.get("at");
+        if (app && options && location?.type === "string" && typeof rubyLiteral(location) === "string") {
+          record({node, rackApp: app, reference: "mount " + app, guards: scope.guards});
+          continue;
+        }
       } else if (!call.block && (HTTP_METHODS.has(call.method) || call.method === "root" || call.method === "match")) {
         const destination = httpDestination(call, scope.resource);
         if (destination) {
@@ -241,17 +250,27 @@ export function extractRailsRouteDependencies({ path, source, applicationSource,
         reject(statement, "Expected a direct routes.draw block on Rails.application or the configured application class.");
         continue;
       }
-      visitRoutes(draw.block.childForFieldName("body"), {prefix: "", guards: []}, resolver, ({node, controller, reference, guards}) => {
-        const constant = resolver.camelize(controller + "_controller");
-        if (!constant) {
-          reject(node, "Controller inflection could not be determined statically.");
-          return;
-        }
+      visitRoutes(draw.block.childForFieldName("body"), {prefix: "", guards: []}, resolver, site => {
+        const {node, reference, guards} = site;
         const line = node.startPosition.row + 1;
-        const target = resolver.resolveConstant(`::${constant}`, { path, line });
-        if (!target || !/(^|\/)app\/controllers\/.+\.rb$/.test(target)) {
-          diagnostics.push({ path, line, code: "unresolved-route", message: `No unambiguous local controller file for ${constant}.` });
-          return;
+        let target: string | null;
+        if ("rackApp" in site) {
+          target = resolver.resolveConstant(site.rackApp, {path, line});
+          if (!target) {
+            diagnostics.push({path, line, code: "unresolved-route", message: `No unambiguous local mount target for ${site.rackApp}.`});
+            return;
+          }
+        } else {
+          const constant = resolver.camelize(site.controller + "_controller");
+          if (!constant) {
+            reject(node, "Controller inflection could not be determined statically.");
+            return;
+          }
+          target = resolver.resolveConstant(`::${constant}`, {path, line});
+          if (!target || !/(^|\/)app\/controllers\/.+\.rb$/.test(target)) {
+            diagnostics.push({ path, line, code: "unresolved-route", message: `No unambiguous local controller file for ${constant}.` });
+            return;
+          }
         }
         dependencies.push({ target, type: "routes", kind: "route", reference: [reference, ...guards].join(" "), line });
       }, reject);

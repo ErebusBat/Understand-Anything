@@ -9,6 +9,8 @@ beforeAll(async () => { await plugin.init(); });
 function extract(source: string, path = "config/routes.rb", isRails = true) {
   const references: string[] = [];
   const targets: Record<string, string> = {
+    "Public::Root": "app/api/public/root.rb",
+    "::Public::Root": "app/api/public/root.rb",
     "::PeopleController": "app/controllers/people_controller.rb",
     "::GeocodersController": "app/controllers/geocoders_controller.rb",
     "::Admin::PeopleController": "app/controllers/admin/people_controller.rb",
@@ -57,7 +59,7 @@ describe("restricted Rails routes", () => {
       get '/people', to: "#{controller}#index"
       get '/people', to: 'people#index', constraints: allowed
       get '/people' => handler
-      mount App => '/'
+      mount rack_app => '/'
       draw :extra
       root to: redirect('/')
     end`);
@@ -90,6 +92,22 @@ describe("restricted Rails routes", () => {
       ["people#index if SiteOptions.routes.preview", "app/controllers/admin/people_controller.rb"],
       ["resource :geocoder unless SiteOptions.routes.preview", "app/controllers/geocoders_controller.rb"],
     ]);
+  });
+
+  it("links literal Rack mounts without adding a controller namespace", () => {
+    const result = extract(`Rails.application.routes.draw do
+      namespace :admin do
+        mount Public::Root => "/"
+        mount ::Public::Root, at: "/api", as: :api
+        mount Public::Root, at: dynamic
+        mount Missing => "/x"
+      end
+    end`);
+    expect(result.dependencies.map(f => [f.type, f.target, f.reference, f.line])).toEqual([
+      ["routes", "app/api/public/root.rb", "mount Public::Root", 3],
+      ["routes", "app/api/public/root.rb", "mount ::Public::Root", 4],
+    ]);
+    expect(result.diagnostics.map(d => [d.line, d.code])).toEqual([[5, "unsupported-route"], [6, "unresolved-route"]]);
   });
 
   it("retains bare constant guards on both branches of a route", () => {
