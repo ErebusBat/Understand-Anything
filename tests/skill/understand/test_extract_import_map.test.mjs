@@ -1355,7 +1355,7 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
       'app/helpers/auth.rb': [],
       'lib/shared/logger.rb': [],
     });
-    expect(result.output.dependencyResolverVersion).toBe(4);
+    expect(result.output.dependencyResolverVersion).toBe(5);
   });
 
   it('reads literal Ruby calls without matching strings, heredocs or unrelated receivers', () => {
@@ -1453,7 +1453,7 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
       'README.md': [],
       'app/models/team.rb': full.output.dependencyMap['app/models/team.rb'],
     });
-    expect(selective.output.dependencyResolverVersion).toBe(4);
+    expect(selective.output.dependencyResolverVersion).toBe(5);
     expect(selective.output.dependencyDiagnostics).toEqual([]);
     expect(selective.output.importMap).toEqual({'app/models/team.rb':['app/models/person.rb'],'README.md':[]});
   });

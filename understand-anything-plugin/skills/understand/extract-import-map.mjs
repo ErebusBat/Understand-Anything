@@ -36,7 +36,7 @@
  *     dependencyMap: { <path>: [{ target, type, kind, reference?, line? }, ...] },
  *     dependencyDiagnostics: [{ path, code, message, line? }, ...],
  *     dependencyContexts: [{ root, isRails, blocked }, ...],
- *     dependencyResolverVersion: 2
+ *     dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION
  *   }
  *
  * Logging: stderr only (stdout reserved for piped tools).
