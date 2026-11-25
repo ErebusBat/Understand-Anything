@@ -49,23 +49,26 @@ function partialKey(name: string): string {
 
 function renderPath(node: RubyAstNode, controller: string): { name: string; key: string } | null {
   const call = rubyCall(node);
-  if (!call || call.method !== "render" || call.receiver || call.block || call.args.length !== 1) return null;
-  const arg = call.args[0];
-  let name = rubyLiteral(arg);
+  if (!call || call.method !== "render" || call.receiver || call.block || !call.args.length) return null;
+  const [first, ...rest] = call.args;
+  const positional = first.type === "string" || first.type === "simple_symbol";
+  let name = positional ? rubyLiteral(first) : undefined;
   let partial = false;
-  if (arg.type === "pair" || arg.type === "hash") {
-    const options = rubyOptions(call.args);
-    if (!options || options.size !== 1) return null;
-    const [[mode, value]] = options;
-    if (!["action", "template", "partial"].includes(mode)) return null;
-    // Action lookup applies controller prefixes. An explicit template uses
-    // the view root. Only accept paths whose prefix choice is unambiguous.
-    if (typeof value !== "string" || (mode === "action" && value.includes("/"))
-      || (mode === "template" && !value.includes("/"))) return null;
-    const pair = arg.type === "hash" ? rubyStatements(arg)[0] : arg;
-    if (mode !== "action" && pair?.childForFieldName("value")?.type !== "string") return null;
-    name = value;
-    partial = mode === "partial";
+  const seen = new Set<string>();
+  const options = positional ? rest : call.args;
+  for (const pair of options.flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])) {
+    if (pair.type !== "pair") return null;
+    const key = rubyLiteral(pair.childForFieldName("key"));
+    if (typeof key !== "string" || seen.has(key)) return null;
+    seen.add(key);
+    // The layout and response status are independent of the template path.
+    if (["layout", "status", "locals"].includes(key)) continue;
+    if (positional || name !== undefined || !["action", "template", "partial"].includes(key)) return null;
+    const value = pair.childForFieldName("value");
+    name = rubyLiteral(value);
+    if (typeof name !== "string" || (key === "action" && name.includes("/"))
+      || (key === "template" && !name.includes("/")) || (key !== "action" && value?.type !== "string")) return null;
+    partial = key === "partial";
   }
   if (typeof name !== "string" || !VIEW_NAME.test(name)) return null;
   const key = name.includes("/") ? name : `${controller}/${name}`;

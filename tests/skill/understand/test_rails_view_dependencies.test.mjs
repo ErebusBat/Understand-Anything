@@ -143,7 +143,7 @@ it('infers relative partials only from an established controller render context'
   const paths = ['new', 'edit', 'show', '_shared'].map(stem => dir + stem + '.haml');
   const facts = scan({
     'config/application.rb': application,
-    'app/controllers/orders_controller.rb': 'class OrdersController < ActionController::Base; def new; end; def update; render :edit; end; end',
+    'app/controllers/orders_controller.rb': 'class OrdersController < ActionController::Base; def new; end; def update; render :edit, layout: current_layout, status: :ok; end; end',
     'app/controllers/shared_controller.rb': 'class SharedController < ActionController::Base; def show; render "orders/show"; end; end',
     ...Object.fromEntries(paths.map(path => [path, partial])),
     [target]: '', 'app/views/shared/_form.html.haml': '',
