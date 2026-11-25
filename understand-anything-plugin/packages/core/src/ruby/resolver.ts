@@ -2,7 +2,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
-import { detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
+import { detectRailsApplication, gemfileUsesClassicRails, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
 import type { DependencyDiagnostic, DependencyFact, RubyDependencyFailure, RubyInventoryFile } from "./types.js";
 
 interface Declaration {
@@ -86,6 +86,7 @@ export class RubyDependencyResolver {
     const paths = [...new Set(options.files.filter(f => f.path.endsWith(".rb") || f.language === "ruby").map(f => f.path))].sort(compare);
     const autoloadPaths = paths.filter(path => path.endsWith(".rb"));
     const trees = new Map<string, { application: boolean; engines: boolean }>();
+    let classicRails = false;
     for (const path of paths) {
       const autoloadable = path.endsWith(".rb");
       let source: string;
@@ -97,6 +98,7 @@ export class RubyDependencyResolver {
       }
       try {
         const detected = plugin.withSyntaxTree(path, source, root => {
+          if (path === "Gemfile") classicRails = gemfileUsesClassicRails(root);
           if (!autoloadable) return {application: false, engines: false};
           let engines = false;
           walkRuby(root, node => {
@@ -146,7 +148,7 @@ export class RubyDependencyResolver {
     for (const [path, source] of this.sources) {
       this.facts.set(path, plugin.withSyntaxTree(path, source, root => this.extractFacts(path, root)));
     }
-    this.buildIndex();
+    this.buildIndex(classicRails && !!trees.get("config/application.rb")?.application);
   }
 
   get inferenceBlocked(): boolean {
@@ -296,16 +298,16 @@ export class RubyDependencyResolver {
     return result;
   }
 
-  private buildIndex(): void {
+  private buildIndex(classicRails: boolean): void {
     const roots = [...new Map(this.configuration.roots.map(r => [r.path, r])).values()].sort((a,b) => b.path.length - a.path.length || compare(a.path,b.path));
     const expectedOwners = new Map<string, string[]>();
     const classWrappers = new Set<Declaration>();
     const literalCandidates = new Set<Declaration>();
     for (const [path, facts] of this.facts) {
-      const root = roots.find(r => path.startsWith(r.path + "/"));
+      const matchingRoots = roots.filter(r => path.startsWith(r.path + "/"));
       const ignored = this.configuration.ignored.some(p => path === p || path.startsWith(p + "/") || path === p + ".rb");
       const initializer = this.initializerPaths.has(path);
-      if (!path.endsWith(".rb") || (!root && !initializer) || ignored) {
+      if (!path.endsWith(".rb") || (!matchingRoots.length && !initializer) || ignored) {
         // A spec or task may define test doubles and local aliases. They
         // participate in lookup in this file, even though Rails cannot
         // autoload them for consumers in another file.
@@ -316,16 +318,29 @@ export class RubyDependencyResolver {
         }
         continue;
       }
-      const expected = root ? this.configuration.inflections.camelize(path.slice(root.path.length + 1, -3), true) : null;
-      if (expected) expectedOwners.set(expected, [...(expectedOwners.get(expected) ?? []), path]);
-      const corroborated = expected && facts.declarations.some(d => d.name === expected && d.kind !== "assignment" && !d.conditional);
-      if (root && !corroborated) this.addDiagnostic({path, code: "unsupported_constant_mapping", message: `Autoload path expects ${expected ?? "an unsupported constant name"}; no matching unconditional declaration`});
+      // Classic searches each root independently, while Zeitwerk gives a
+      // nested root its own top-level namespace. A path alone never creates a
+      // file binding, but a competing path can still intercept the lookup.
+      const eligibleRoots = classicRails ? matchingRoots : matchingRoots.slice(0, 1);
+      const expected = [...new Set(eligibleRoots
+        .map(root => this.configuration.inflections.camelize(path.slice(root.path.length + 1, -3), true))
+        .filter(name => name !== null))];
+      for (const name of expected) expectedOwners.set(name, [...(expectedOwners.get(name) ?? []), path]);
+      const corroborated = expected.filter(name => facts.declarations.some(d => d.name === name && d.kind !== "assignment" && !d.conditional));
+      if (matchingRoots.length && !corroborated.length) this.addDiagnostic({
+        path, code: "unsupported_constant_mapping",
+        message: `Autoload path expects ${expected.join(" or ") || "an unsupported constant name"}; no matching unconditional declaration`,
+      });
+      const namespaceTargets = corroborated.length ? corroborated : expected;
       for (const declaration of facts.declarations) {
         // Namespace wrappers in a nested file are not additional autoload
         // targets or independent reopenings of the namespace's own file.
-        if (expected?.startsWith(declaration.name + "::") && declaration.kind === "module" && !declaration.conditional) continue;
-        if (expected?.startsWith(declaration.name + "::") && declaration.wrapsDeclarations) classWrappers.add(declaration);
-        if (declaration.literalValue && !declaration.conditional && (initializer || (corroborated && declaration.name.startsWith(expected + "::")))) {
+        const direct = corroborated.includes(declaration.name);
+        const wrapper = !direct && namespaceTargets.some(name => name.startsWith(declaration.name + "::"));
+        if (wrapper && declaration.kind === "module" && !declaration.conditional) continue;
+        if (wrapper && declaration.wrapsDeclarations) classWrappers.add(declaration);
+        const nested = corroborated.some(name => declaration.name.startsWith(name + "::"));
+        if (declaration.literalValue && !declaration.conditional && (initializer || nested)) {
           literalCandidates.add(declaration);
         }
         const list = this.declarations.get(declaration.name) ?? [];
@@ -334,7 +349,7 @@ export class RubyDependencyResolver {
         // Loading the expected constant also defines its nested constants.
         // An unrelated sibling declaration is not independently autoloadable
         // merely because it happens to share that source file.
-        if (corroborated && (declaration.name === expected || declaration.name.startsWith(expected + "::"))
+        if ((direct || nested)
           && !declaration.conditional && declaration.kind !== "assignment") {
           const paths = this.bindings.get(declaration.name) ?? new Set<string>();
           paths.add(path);
@@ -343,8 +358,8 @@ export class RubyDependencyResolver {
         const parts = declaration.name.split("::");
         while (parts.length) { this.namespaces.add(parts.join("::")); parts.pop(); }
       }
-      if (expected) {
-        const parts = expected.split("::");
+      for (const name of expected) {
+        const parts = name.split("::");
         while (parts.length) { this.namespaces.add(parts.join("::")); parts.pop(); }
       }
     }

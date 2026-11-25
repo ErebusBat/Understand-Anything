@@ -26,6 +26,24 @@ export function detectRailsApplication(root: RubyAstNode): boolean {
   return found;
 }
 
+/** Before Rails 6, classic autoloading searched each configured root for a
+ * missing constant. Accept only a direct Gemfile requirement that pins the
+ * application to one of those major versions. */
+export function gemfileUsesClassicRails(root: RubyAstNode): boolean {
+  let declarations = 0;
+  let classic = false;
+  walkRuby(root, node => {
+    const call = rubyCall(node);
+    if (call?.method !== "gem" || call.receiver || rubyLiteral(call.args[0]) !== "rails") return;
+    declarations++;
+    const version = rubyLiteral(call.args[1]);
+    classic = node.parent?.type === "program" && !call.block && call.args.length === 2
+      && call.args.every(arg => arg.type === "string") && typeof version === "string"
+      && /^(?:(?:=|~>)\s*)?[3-5](?:\.\d+)*$/.test(version.trim());
+  });
+  return declarations === 1 && classic;
+}
+
 export function initialRubyConfiguration(paths: string[], isRails: boolean): RubyConfiguration {
   const roots = new Set<string>();
   if (isRails) for (const path of paths) {
