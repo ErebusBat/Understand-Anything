@@ -104,6 +104,7 @@ describe("bounded Rails dependency resolver", () => {
       {target: "app/api/v1/orders.rb", type: "routes", kind: "route", reference: "mount V1::Orders", line: 5, resolution: "inferred"},
     ]);
     expect(targets(resolver, "app/api/other.rb", "route")).toEqual([]);
+    expect(resolver.diagnostics.some(d => d.path === "app/api/v1/root.rb" && d.line === 5)).toBe(false);
     const strict = createRubyDependencyResolver({projectRoot:root, files:inventory, plugin, mixinResolution:"strict"});
     expect(routes(strict)).toEqual([routes(resolver)[0]]);
     expect(targets(resolver, "app/api/v1/root.rb", "grape_helper")).toEqual(["app/api/v1/formatting.rb"]);

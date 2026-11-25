@@ -269,6 +269,7 @@ export class RubyDependencyResolver {
       const target = posix.join(posix.dirname(path), source.endsWith(".rb") ? source : source + ".rb");
       if (this.sources.has(target)) result.requiredFiles.push({path: target, end: statement.endIndex});
     }
+    const grapeArguments = new Map<number, "route" | "grape_helper">();
     const reference = (node: RubyAstNode, nesting: string[], kind: Reference["kind"], owner?: string) => {
       const name = rubyConstant(node);
       const call = kind === "constant" ? rubyCall(node.parent) : null;
@@ -296,7 +297,7 @@ export class RubyDependencyResolver {
         if (uncertain) this.addDiagnostic({path, code: "unsupported_declaration_scope", line: declaration.line, message: `Relative qualified declaration ${raw} inside another namespace is unsupported`});
         const body = node.childForFieldName("body");
         if (body && !declaration.conditional && declaration.superclass?.replace(/^::/, "") === "Grape::API") {
-          for (const {node, kind} of grapeDependencyArguments(body)) reference(node, [name, ...nesting], kind, name);
+          for (const {node, kind} of grapeDependencyArguments(body)) grapeArguments.set(node.id, kind);
         }
         if (body && !declaration.conditional) declaration.methods = rubyMethodEvidence(body, declaration.kind);
         if (body && path.startsWith("app/jobs/")) declaration.performsJob = declaresJobEntryPoint(body, declaration.kind);
@@ -427,7 +428,7 @@ export class RubyDependencyResolver {
         result.references.push(ref);
         return;
       }
-      if (rubyConstant(node)) { reference(node, nesting, "constant", owner?.name); return; }
+      if (rubyConstant(node)) { reference(node, nesting, grapeArguments.get(node.id) ?? "constant", owner?.name); return; }
       if (node.type === "scope_resolution") {
         this.addDiagnostic({path, code: "unsupported_constant_expression", line: node.startPosition.row + 1, message: "A dynamic receiver cannot identify a constant namespace"});
         return;
@@ -907,11 +908,11 @@ export class RubyDependencyResolver {
     return endpoint && this.uniqueModelAt(endpoint) && resolve(outerName, ref, reflection.path) === endpoint ? endpoint : null;
   }
 
-  private grapeEndpoint(name: string, path: string): boolean {
+  private grapeEndpoint(name: string, path?: string): boolean {
     const declarations = this.declarations.get(name);
-    if (declarations?.length !== 1 || !this.bindings.get(name)?.has(path) || this.blockedPrefix(name)) return false;
+    if (declarations?.length !== 1 || this.blockedPrefix(name)) return false;
     const endpoint = declarations[0];
-    return endpoint.kind === "class" && !!endpoint.superclass
+    return (!path || endpoint.path === path) && !!this.bindings.get(name)?.has(endpoint.path) && endpoint.kind === "class" && !!endpoint.superclass
       && this.lexicalName(endpoint.superclass, endpoint.nesting) === "Grape::API"
       && !this.declarations.has("Grape::API") && !this.blockedPrefix("Grape::API");
   }
@@ -922,15 +923,17 @@ export class RubyDependencyResolver {
     const found: DependencyFact[] = this.inferenceBlocked ? [] : this.specRegistry.dependencies(path, this.applicationRootKnown);
     for (const ref of this.facts.get(path)?.references ?? []) {
       if (ref.kind === "route" || ref.kind === "grape_helper") {
-        if (!ref.owner || !this.grapeEndpoint(ref.owner, path)) continue;
-        const match = this.lookupConstant(ref.reference, {path, line: ref.line, nesting: ref.nesting, macroTarget: "grape"}, this.mixinResolution);
+        const name = this.lexicalName(ref.reference, ref.nesting, this.consumerDeclarations.get(path));
+        const corroborated = ref.owner && this.grapeEndpoint(ref.owner, path) && (ref.kind === "route"
+          ? this.grapeEndpoint(name) : this.declarations.get(name)?.every(d => d.kind === "module"));
+        const match = this.lookupConstant(ref.reference, {path, line: ref.line, nesting: ref.nesting,
+          valueRead: true, macroTarget: corroborated ? "grape" : undefined}, this.mixinResolution);
         if (!match || match.target === path) continue;
-        const name = this.lexicalName(ref.reference, ref.nesting);
-        if (ref.kind === "route" && this.grapeEndpoint(name, match.target)) {
-          found.push({...match, kind: ref.kind, type: "routes", reference: "mount " + ref.reference, line: ref.line});
-        } else if (ref.kind === "grape_helper" && this.declarations.get(name)?.every(d => d.kind === "module")) {
-          found.push({...match, kind: ref.kind, type: "depends_on", reference: "helpers " + ref.reference, line: ref.line});
-        }
+        if (corroborated) found.push({...match, kind: ref.kind, type: ref.kind === "route" ? "routes" : "depends_on",
+          reference: (ref.kind === "route" ? "mount " : "helpers ") + ref.reference, line: ref.line});
+        // Keep ordinary lexical facts as well. An inferred DSL match already
+        // accounts for the reference across the uninspected framework ancestor.
+        if (!match.resolution) found.push({...match, kind: "constant", type: "depends_on", reference: ref.reference, line: ref.line});
         continue;
       }
       if (ref.kind === "validator") {
