@@ -64,7 +64,7 @@ function factoryDefinition(node: RubyAstNode): FactoryRegistry | undefined {
   }
 }
 
-type Site = {kind: "rspec_shared_group" | "factory" | "factory_association"; registry: "RSpec" | FactoryRegistry; key: string; reference: string; line: number; bareBuilder?: string};
+type Site = {kind: "rspec_shared_group" | "factory" | "factory_association" | "factory_sequence"; registry: "RSpec" | FactoryRegistry; key: string; reference: string; line: number; bareBuilder?: string};
 type Providers = Map<string, string | null>;
 
 /** A second definition, including one with uncertain visibility, rules out
@@ -73,15 +73,59 @@ function register(providers: Providers, key: string, target: string | null): voi
   providers.set(key, providers.has(key) ? null : target);
 }
 
+function factoryScopedSequence(node: RubyAstNode): boolean {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (parent.type !== "block" && parent.type !== "do_block") continue;
+    const call = rubyCall(parent.parent);
+    if (call?.method === "define" && factoryReceiver(call.receiver)) return false;
+    if (call && !call.receiver && ["factory", "trait"].includes(call.method)) return true;
+  }
+  return false;
+}
+
+class FactoryRegistrations {
+  private readonly providers: Record<FactoryRegistry, Providers> = {FactoryBot: new Map(), FactoryGirl: new Map()};
+  private readonly unknownNames: Record<FactoryRegistry, FactoryNameBounds[]> = {FactoryBot: [], FactoryGirl: []};
+
+  add(args: RubyAstNode[], registry: FactoryRegistry | undefined, provider: string | null, sequence: boolean): void {
+    const name = rubyLiteral(args[0]);
+    const names = typeof name === "string" ? [name] : [];
+    let unknown = typeof name === "string" ? null : factoryNameBounds(args[0]);
+    // A sequence may start at a literal value before its options hash.
+    const optionsStart = sequence && args[1] && ["integer", "string", "simple_symbol"].includes(args[1].type) ? 2 : 1;
+    for (const opt of args.slice(optionsStart).flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])) {
+      const keyNode = opt.type === "pair" ? opt.childForFieldName("key") : null;
+      if (keyNode?.type === "string") continue; // Ruby option lookup uses the symbol :aliases.
+      const key = rubyLiteral(keyNode);
+      if (typeof key !== "string") { unknown = {prefix: "", suffix: ""}; continue; }
+      if (key !== "aliases") continue;
+      const aliases = rubyLiteral(opt.childForFieldName("value"));
+      if (!Array.isArray(aliases)) { unknown = {prefix: "", suffix: ""}; continue; }
+      for (const alias of aliases) if (typeof alias === "string") names.push(alias);
+    }
+    // A declaration under unknown DSL control can collide with either registry.
+    for (const owner of registry ? [registry] : factoryRegistries) {
+      if (unknown) this.unknownNames[owner].push(unknown);
+      for (const key of names) register(this.providers[owner], key, provider);
+    }
+  }
+
+  lookup(registry: FactoryRegistry, key: string): string | null | undefined {
+    if (this.unknownNames[registry].some(({prefix, suffix}) =>
+      key.startsWith(prefix) && key.endsWith(suffix) && key.length >= prefix.length + suffix.length)) return null;
+    return this.providers[registry].get(key);
+  }
+}
+
 export class RubySpecRegistry {
   private readonly vcr = new VcrCassettes();
   private readonly factorySyntax = new SpecFactorySyntax();
   private readonly shared = new Map<string, string | null>();
-  private readonly factories: Record<FactoryRegistry, Providers> = {FactoryBot: new Map(), FactoryGirl: new Map()};
+  private readonly factories = new FactoryRegistrations();
+  private readonly sequences = new FactoryRegistrations();
   private readonly uses = new Map<string, Site[]>();
   private readonly replacedRegistries = new Set<string>();
   private readonly localReplacements = new Map<string, Set<string>>();
-  private readonly unknownNames: Record<FactoryRegistry, FactoryNameBounds[]> = {FactoryBot: [], FactoryGirl: []};
 
   constructor(private readonly hasCassette: (path: string) => boolean = () => false) {}
 
@@ -125,28 +169,18 @@ export class RubySpecRegistry {
           reference: "association " + args[0].text + (options.has("factory") ? " => " + key : "")});
         return;
       }
-      if (method === "factory" && !receiver) {
+      if ((method === "factory" || method === "sequence") && !receiver) {
+        if (method === "sequence" && factoryScopedSequence(node)) return;
         const definition = factoryDefinition(node);
         if (!factoryFile && !definition) return;
-        const provider = factoryFile && definition ? path : null;
-        // A declaration under unknown DSL control can collide with either registry.
-        const registries = definition ? [definition] : factoryRegistries;
-        const name = rubyLiteral(args[0]);
-        const names = typeof name === "string" ? [name] : [];
-        let unknown = typeof name === "string" ? null : factoryNameBounds(args[0]);
-        for (const opt of args.slice(1).flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])) {
-          if (opt.type !== "pair") { unknown = {prefix: "", suffix: ""}; continue; }
-          if (rubyLiteral(opt.childForFieldName("key")) !== "aliases") continue;
-          const aliases = rubyLiteral(opt.childForFieldName("value"));
-          if (!Array.isArray(aliases)) { unknown = {prefix: "", suffix: ""}; continue; }
-          for (const alias of aliases) {
-            if (typeof alias === "string") names.push(alias);
-          }
-        }
-        for (const registry of registries) {
-          if (unknown) this.unknownNames[registry].push(unknown);
-          for (const key of names) register(this.factories[registry], key, provider);
-        }
+        const names = method === "sequence" ? this.sequences : this.factories;
+        names.add(args, definition, factoryFile && definition ? path : null, method === "sequence");
+        return;
+      }
+      if (method === "generate" && args.length === 1 && !call.block) {
+        const registry = factoryReceiver(receiver), name = rubyLiteral(args[0]);
+        if (registry && typeof name === "string") sites.push({kind: "factory_sequence", registry, key: name,
+          reference: registry + ".generate " + args[0].text, line: node.startPosition.row + 1});
         return;
       }
       if (factoryUses.has(method)) {
@@ -181,13 +215,12 @@ export class RubySpecRegistry {
     const facts = this.vcr.dependencies(path, hasRailsRoot, this.factorySyntax, shadowed).filter(f => this.hasCassette(f.target));
     for (const site of this.uses.get(path) ?? []) {
       const registry = site.registry;
-      if (this.replacedRegistries.has(registry) || this.localReplacements.get(path)?.has(registry)
-        || registry !== "RSpec" && this.unknownNames[registry].some(({prefix, suffix}) =>
-          site.key.startsWith(prefix) && site.key.endsWith(suffix) && site.key.length >= prefix.length + suffix.length)) continue;
-      if (site.bareBuilder && (this.replacedRegistries.has("RSpec") || this.localReplacements.get(path)?.has("RSpec")
+      if (shadowed(path, registry)) continue;
+      if (site.bareBuilder && (shadowed(path, "RSpec")
         || !this.factorySyntax.available(path, site.bareBuilder, hasRailsRoot))) continue;
-      const target = (registry === "RSpec" ? this.shared : this.factories[registry]).get(site.key);
-      if (target && target !== path && !this.localReplacements.get(target)?.has(registry)) {
+      const names = site.kind === "factory_sequence" ? this.sequences : this.factories;
+      const target = registry === "RSpec" ? this.shared.get(site.key) : names.lookup(registry, site.key);
+      if (target && target !== path && !shadowed(target, registry)) {
         facts.push({target, type: "depends_on", kind: site.kind, reference: site.reference, line: site.line, resolution: "inferred"});
       }
     }

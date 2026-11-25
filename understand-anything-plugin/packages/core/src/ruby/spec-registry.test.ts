@@ -142,6 +142,27 @@ describe("legacy FactoryGirl suites", () => {
     expect(index({...files, [source]: "FactoryGirl = Other\n" + association}, false, source)).toEqual([]);
   });
 
+  it("links explicitly generated, unique global sequences including aliases and excludes scoped sequences", () => {
+    const sequence = "test/factories/sequences.rb", source = "features/step_definitions/signup.rb";
+    const files = {...suite, [sequence]: `FactoryGirl.define do
+      sequence(:email, 42, aliases: [:address]) { |n| n }
+      factory(:user) { sequence(:email) { |n| n }; sequence(:nickname) { |n| n } }
+    end`, [source]: `FactoryGirl.generate(:email)
+      ::FactoryGirl.generate :address
+      FactoryGirl.generate :nickname
+      FactoryBot.generate :email
+      FactoryGirl.generate dynamic
+      generate :email
+      FactoryGirl.create :email`};
+    expect(index(files, false, source).map(f => [f.kind, f.target, f.line])).toEqual([
+      ["factory_sequence", sequence, 1], ["factory_sequence", sequence, 2],
+    ]);
+    expect(index({...files, "test/factories/extra.rb": "FactoryGirl.define { sequence(variable) }"}, false, source)).toEqual([]);
+    expect(index({...files, "test/factories/extra.rb": "FactoryGirl = Fake"}, false, source)).toEqual([]);
+    expect(index({...files, "test/factories/extra.rb": "FactoryGirl.define { sequence :email }"}, false, source)
+      .map(f => f.line)).toEqual([2]);
+  });
+
   it("keeps rebindings and unknown names scoped to their named registry", () => {
     for (const replacement of ["FactoryGirl = LocalRegistry", "FactoryGirl.define { factory(dynamic_name) }"]) {
       expect(index({...suite, "test/factories/extra.rb": replacement}).map(f => f.target)).toEqual([modern]);
