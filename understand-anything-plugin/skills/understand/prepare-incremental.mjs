@@ -58,6 +58,7 @@ const {
   classifyUpdate,
   createIgnoreFilter,
   loadRubyMixinResolution,
+  isResqueSchedulePath,
   resolveUaDir,
   DEFAULT_RUBY_MIXIN_RESOLUTION,
   RUBY_DEPENDENCY_RESOLVER_VERSION,
@@ -122,8 +123,8 @@ function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths
   const dependencyPaths = currentScan.files
     .filter(({language, path}) => language === 'ruby' || isRubyPath(path)
       || /(?:^|\/)app\/views\/.+\.(?:erb|haml|slim)$/.test(path)
-      || (isSprocketsAsset(path) && /\.(?:hbs|handlebars|coffee)$/.test(path))
-      || /(?:^|\/)config\/(?:[^/]+\/)*(?:resque|resque[_-]schedule|schedule)\.ya?ml$/.test(path))
+      || (isSprocketsAsset(path) && /\.(?:hbs|handlebars)$/.test(path))
+      || isResqueSchedulePath(path))
     .map(file => file.path);
   const currentPaths = new Set(currentScan.files.map(file => file.path));
   const previousFactSources = Object.entries(previousScan?.dependencyMap ?? {})
