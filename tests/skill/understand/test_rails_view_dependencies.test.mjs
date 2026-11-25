@@ -92,3 +92,20 @@ it('skips layout candidates when a controller ancestor overrides template lookup
   }, [controller]);
   expect(facts[controller].filter(f => f.kind === 'layout')).toEqual([]);
 });
+
+it('checks abstract ancestors and follows the declared respond_to HTML handler', () => {
+  const controller = 'app/controllers/orders_controller.rb';
+  const facts = scan({
+    'config/application.rb': application,
+    'app/controllers/abstract_reports.rb': 'class AbstractReports < ActionController::Base; end',
+    [controller]: [
+      'class OrdersController < AbstractReports', 'def show', 'respond_to do |format|',
+      'format.html { render layout: "base" }', 'format.json { render layout: "base" }',
+      'other.html { render layout: "base" }', 'end', 'end', 'end',
+    ].join('\n'),
+    'app/views/layouts/base.html.haml': '',
+  }, [controller]);
+  expect(facts[controller].filter(f => f.kind === 'layout')).toEqual([
+    {target: 'app/views/layouts/base.html.haml', type: 'depends_on', kind: 'layout', reference: 'base', line: 4},
+  ]);
+});

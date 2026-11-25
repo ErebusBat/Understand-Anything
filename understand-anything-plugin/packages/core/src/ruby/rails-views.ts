@@ -7,6 +7,7 @@ import { templatePartials } from "./template-partials.js";
 import type { DependencyFact } from "./types.js";
 
 const CONTROLLER = /^app\/controllers\/((?:[a-z0-9_]+\/)*[a-z0-9_]+)_controller\.rb$/;
+const CONTROLLER_CLASS = /^app\/controllers\/((?:[a-z0-9_]+\/)*[a-z0-9_]+)\.rb$/;
 const VIEW_NAME = /^(?:[a-z0-9_-]+\/)*[a-z0-9_-]+$/;
 const LOOKUP_METHODS = new Set(["render", "render_to_body", "find_template", "lookup_context", "view_paths",
   "layout", "_layout", "_normalize_layout", "_layout_for_option", "controller_path", "_prefixes", "local_prefixes", "prepend_view_path", "append_view_path"]);
@@ -136,8 +137,9 @@ export class RailsViewResolver {
 
   private controller(path: string): Controller | null {
     if (this.controllers.has(path)) return this.controllers.get(path)!;
+    const classPath = CONTROLLER_CLASS.exec(path)?.[1];
+    const name = classPath && this.resolver.camelize(classPath);
     const controllerPath = CONTROLLER.exec(path)?.[1];
-    const name = controllerPath && this.resolver.camelize(controllerPath + "_controller");
     const source = this.resolver.sources.get(path);
     if (!name || source === undefined || this.resolver.resolveConstant("::" + name, { path }) !== path) return null;
     const result = this.plugin.withSyntaxTree(path, source, root => {
@@ -157,21 +159,41 @@ export class RailsViewResolver {
         const fact: DependencyFact = {type: "depends_on", kind, target, reference: expression.name, line: node.startPosition.row + 1};
         facts.set(JSON.stringify(fact), fact);
       };
+      // An abstract ancestor can live in a conventionally named Ruby file
+      // without the controller suffix. Only its lookup behavior is needed.
+      if (!controllerPath) return {parent: parent ?? null, facts: []};
       const statements = rubyStatements(body);
       const layouts = statements.filter(statement => rubyCall(statement)?.method === "layout");
       if (layouts.length === 1) add("layout", layoutPath(layouts[0]), layouts[0]);
       for (const method of statements) {
         const methodBody = method.type === "method" && method.childForFieldName("body");
         if (!methodBody) continue;
-        walkRuby(methodBody, statement => {
+        const collect = (statement: RubyAstNode): void | boolean => {
           // Blocks may change self or negotiate another format. Nested classes
           // and methods have their own receiver.
           if (["block", "do_block", "lambda", "class", "module", "singleton_class", "method", "singleton_method"].includes(statement.type)) return false;
-          if (rubyCall(statement)?.method === "render") {
+          const call = rubyCall(statement);
+          if (call?.method === "respond_to" && !call.receiver && !call.args.length && call.block) {
+            // Rails passes the format collector to this block and evaluates
+            // the selected handler on the controller. Restrict this exception
+            // to immediate HTML handlers on that specific block parameter.
+            const params = rubyStatements(call.block.childForFieldName("parameters"));
+            const collector = params.length === 1 && params[0].type === "identifier" && params[0].text;
+            for (const child of rubyStatements(call.block.childForFieldName("body"))) {
+              const handler = rubyCall(child);
+              if (handler?.method !== "html" || handler.receiver?.type !== "identifier" || handler.receiver.text !== collector
+                || handler.args.length || handler.block?.childForFieldName("parameters")) continue;
+              const body = handler.block?.childForFieldName("body");
+              if (body) walkRuby(body, collect);
+            }
+            return false;
+          }
+          if (call?.method === "render") {
             add("layout", layoutPath(statement), statement);
             add("render", renderPath(statement, controllerPath), statement);
           }
-        });
+        };
+        walkRuby(methodBody, collect);
       }
       return { parent: parent ?? null, facts: [...facts.values()] };
     });
