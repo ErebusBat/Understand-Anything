@@ -960,4 +960,3 @@ describe("RubyInflections", () => {
     expect(inflections.pluralize("person")).toBe("people");
   });
 });
-    expect(inflections.singularize("menus")).toBe("menu");
