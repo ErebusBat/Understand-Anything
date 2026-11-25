@@ -122,7 +122,6 @@ const LANGUAGE_BY_EXT = Object.freeze({
   '.jsx': 'javascript',
   '.mjs': 'javascript',
   '.cjs': 'javascript',
-  '.coffee': 'coffeescript',
   // Python
   '.py': 'python',
   '.pyi': 'python',

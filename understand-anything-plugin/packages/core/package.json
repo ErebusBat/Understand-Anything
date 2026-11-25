@@ -45,6 +45,7 @@
     "@understand-anything/tree-sitter-dart-wasm": "workspace:*",
     "@understand-anything/tree-sitter-ruby-wasm": "workspace:*",
     "@understand-anything/tree-sitter-swift-wasm": "workspace:*",
+    "coffeescript": "1.12.7",
     "fuse.js": "^7.1.0",
     "ignore": "^7.0.5",
     "tree-sitter-c-sharp": "^0.23.1",

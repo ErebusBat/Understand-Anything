@@ -1,5 +1,6 @@
 import type { LanguageConfig } from "../types.js";
 import { typescriptConfig } from "./typescript.js";
+import { coffeescriptConfig } from "./coffeescript.js";
 import { javascriptConfig } from "./javascript.js";
 import { pythonConfig } from "./python.js";
 import { goConfig } from "./go.js";
@@ -47,6 +48,7 @@ export const builtinLanguageConfigs: LanguageConfig[] = [
   // Code languages
   typescriptConfig,
   javascriptConfig,
+  coffeescriptConfig,
   pythonConfig,
   goConfig,
   rustConfig,
@@ -94,6 +96,7 @@ export {
   // Code languages
   typescriptConfig,
   javascriptConfig,
+  coffeescriptConfig,
   pythonConfig,
   goConfig,
   rustConfig,

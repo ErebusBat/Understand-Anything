@@ -121,6 +121,7 @@ export {
   TerraformParser,
   MakefileParser,
   ShellParser,
+  CoffeeScriptParser,
   registerAllParsers,
 } from "./plugins/parsers/index.js";
 export {

@@ -21,7 +21,7 @@ describe('Sprockets require directives', () => {
           '#= require_tree ../templates', '#= require_directory ./models',
           "#= require './extra file'", '#= require_self', '#= require missing',
           '#= require jquery', '#= require style.css', '#= require ./models/user.js',
-          'App = {}', '#= require after', '',
+          'items = [...others]', '#= require after', '',
         ].join('\n')],
         [js + 'extra file.js', 'javascript', 'code', ''],
         [js + 'models/user.js.coffee', 'coffeescript', 'code', ''],

@@ -251,7 +251,8 @@ export interface CallGraphEntry {
 export interface AnalyzerPlugin {
   name: string;
   languages: string[];
-  analyzeFile(filePath: string, content: string): StructuralAnalysis;
+  /** A parser can decline unsupported syntax without reporting an empty successful parse. */
+  analyzeFile(filePath: string, content: string): StructuralAnalysis | null;
   resolveImports?(filePath: string, content: string): ImportResolution[];
   extractCallGraph?(filePath: string, content: string): CallGraphEntry[];
   extractReferences?(filePath: string, content: string): ReferenceResolution[];

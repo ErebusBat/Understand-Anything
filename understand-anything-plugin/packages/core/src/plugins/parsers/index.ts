@@ -9,6 +9,7 @@ export { GraphQLParser } from "./graphql-parser.js";
 export { ProtobufParser } from "./protobuf-parser.js";
 export { TerraformParser } from "./terraform-parser.js";
 export { MakefileParser } from "./makefile-parser.js";
+export { CoffeeScriptParser } from "./coffeescript-parser.js";
 export { ShellParser } from "./shell-parser.js";
 
 import type { PluginRegistry } from "../registry.js";
@@ -23,10 +24,11 @@ import { GraphQLParser } from "./graphql-parser.js";
 import { ProtobufParser } from "./protobuf-parser.js";
 import { TerraformParser } from "./terraform-parser.js";
 import { MakefileParser } from "./makefile-parser.js";
+import { CoffeeScriptParser } from "./coffeescript-parser.js";
 import { ShellParser } from "./shell-parser.js";
 
 /**
- * Register all built-in non-code parsers with a PluginRegistry.
+ * Register all built-in standalone parsers with a PluginRegistry.
  */
 export function registerAllParsers(registry: PluginRegistry): void {
   registry.register(new MarkdownParser());
@@ -41,4 +43,5 @@ export function registerAllParsers(registry: PluginRegistry): void {
   registry.register(new TerraformParser());
   registry.register(new MakefileParser());
   registry.register(new ShellParser());
+  registry.register(new CoffeeScriptParser());
 }
