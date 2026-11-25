@@ -192,6 +192,62 @@ Understand-Anything works across multiple AI coding platforms.
 /plugin install understand-anything
 ```
 
+### Publish this fork locally on Andrew’s Mac
+
+Commit the plugin changes you want to publish, then run this from the fork:
+
+```sh
+cd ~/src/vendor/Understand-Anything
+just publish-local
+```
+
+The recipe copies the marketplace manifest and plugin from the current branch’s
+`HEAD` into `~/.local/share/skillshare-sources/understand-anything`, removes
+stale files there, installs the locked pnpm dependencies, and builds the core
+package. To use that build immediately, start Claude in the project worktree
+you want to analyze:
+
+```sh
+src="$HOME/.local/share/skillshare-sources/understand-anything"
+UNDERSTAND_NO_WORKTREE_REDIRECT=1 claude --plugin-dir "$src/understand-anything-plugin"
+```
+
+Run `/understand` to build the graph. Use `/understand-dashboard` from the same
+worktree to reopen it.
+
+**Skillshare-managed installs.** Publishing refreshes the source directory.
+Skillshare scans that directory when adding or updating a managed install, and
+the generated dependencies exceed its 20,000-entry limit. For a managed install
+or update, stage a clean snapshot at the registered path first. Run these
+commands from the fork in the same shell:
+
+```sh
+src="$HOME/.local/share/skillshare-sources/understand-anything"
+stage=$(mktemp -d)
+git archive -o "$stage/plugin.tar" HEAD .claude-plugin understand-anything-plugin &&
+  mkdir "$stage/source" &&
+  tar -xf "$stage/plugin.tar" -C "$stage/source" &&
+  mkdir -p "$src" &&
+  rsync -a --delete "$stage/source/" "$src/"
+rm -rf "$stage"
+```
+
+For the first install in plain Claude on this Mac, run:
+
+```sh
+skillshare plugin add "$src" --plugin understand-anything --target claude -g
+```
+
+For an existing install, run:
+
+```sh
+skillshare plugin check understand-anything -g
+skillshare plugin update understand-anything -g
+```
+
+After Skillshare finishes, run `just publish-local` again to restore the built
+local copy. Start a fresh Claude session in the project worktree with
+`UNDERSTAND_NO_WORKTREE_REDIRECT=1 claude` to use the managed installation.
 
 ### One-line install (Codex / OpenCode / OpenClaw / Antigravity / Gemini CLI / Pi Agent / Vibe CLI / VS Code Copilot / Hermes / Cline / KIMI CLI / Trae / Nanobot / Kiro / Devin)
 
