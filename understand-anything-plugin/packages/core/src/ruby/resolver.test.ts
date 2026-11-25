@@ -434,6 +434,21 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.resolveConstant("Settings::FEATURE")).toBeNull();
   });
 
+  it("tracks literal serializer options and custom validators in their Ruby scope", () => {
+    const {resolver} = setup({
+      "app/serializers/admin/item_serializer.rb": "class Admin::ItemSerializer < ActiveModel::Serializer; end",
+      "app/serializers/catalog_serializer.rb": "class CatalogSerializer < ActiveModel::Serializer; has_many :items, serializer: Admin::ItemSerializer; end",
+      "app/serializers/shadowed.rb": "class Shadowed < ActiveModel::Serializer; Admin = other; has_many :items, serializer: Admin::ItemSerializer; end",
+      "app/validators/label_code_validator.rb": "class LabelCodeValidator < ActiveModel::EachValidator; end",
+      "app/validators/other_validator.rb": "class OtherValidator; end",
+      "app/models/item.rb": "class Item < ActiveRecord::Base; validates :code, label_code: true, other: true, presence: true; end",
+    });
+    expect(resolver.getDependencies("app/serializers/catalog_serializer.rb")).toContainEqual(
+      expect.objectContaining({kind: "serializer", target: "app/serializers/admin/item_serializer.rb", resolution: "inferred"}));
+    expect(targets(resolver, "app/serializers/shadowed.rb", "serializer")).toEqual([]);
+    expect(targets(resolver, "app/models/item.rb", "validator")).toEqual(["app/validators/label_code_validator.rb"]);
+  });
+
   it("resolves the file that assigns values in loaded Rails initializers", () => {
     const {resolver} = setup({
       "config/initializers/gateway.rb": "module Gateway; PLACEHOLDER = 'proxy'.freeze; TOKEN = ENV['TOKEN']; end",

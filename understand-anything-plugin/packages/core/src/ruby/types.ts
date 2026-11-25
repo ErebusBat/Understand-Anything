@@ -5,10 +5,10 @@ export interface DependencyFact {
   target: string;
   type: "depends_on" | "inherits" | "routes";
   kind: "constant" | "superclass" | "include" | "extend" | "association" | "route" | "render" | "layout"
-    | "rspec_shared_group" | "factory" | "file_read";
+    | "rspec_shared_group" | "factory" | "serializer" | "validator" | "file_read";
   reference?: string;
   line?: number;
-  /** A qualified mixin matched a local module across uninspected ancestry. */
+  /** The source identifies a local candidate through a convention or uninspected ancestry. */
   resolution?: "inferred";
 }
 

@@ -47,6 +47,7 @@ export interface RubyResolveOptions {
   path?: string;
   line?: number;
   association?: boolean;
+  macroTarget?: "serializer" | "validator";
   valueRead?: boolean;
   mixin?: boolean;
   mixinOffset?: number;
@@ -278,9 +279,26 @@ export class RubyDependencyResolver {
         }
         return;
       }
-      if (call && !call.receiver && ASSOCIATIONS.has(call.method)) {
-        const modelContext = /(?:^|\/)app\/models\//.test(path) && owner;
-        if (!modelContext) return;
+      if (node.type === "pair" && /(?:^|\/)app\/serializers\//.test(path)) {
+        const key = rubyLiteral(node.childForFieldName("key"));
+        const value = node.childForFieldName("value");
+        if ((key === "serializer" || key === "each_serializer") && value && rubyConstant(value)) {
+          reference(value, nesting, "serializer", owner?.name);
+          return;
+        }
+      }
+      const modelContext = /(?:^|\/)app\/models\//.test(path) && owner;
+      if (call?.method === "validates" && !call.receiver && modelContext && !inMethod && !conditional && !call.block) {
+        for (const option of call.args.flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])) {
+          if (option.type !== "pair" || rubyLiteral(option.childForFieldName("value")) !== true) continue;
+          const key = rubyLiteral(option.childForFieldName("key"));
+          if (typeof key !== "string" || !/^[a-z][a-z_\d]*$/.test(key)) continue;
+          const validator = this.camelize(key + "_validator");
+          if (validator) result.references.push({reference: validator, kind: "validator", nesting: [owner.name],
+            owner: owner.name, line: option.startPosition.row + 1});
+        }
+      }
+      if (call && !call.receiver && ASSOCIATIONS.has(call.method) && modelContext) {
         const line = node.startPosition.row + 1;
         const reject = (message: string) => this.addDiagnostic({path, code: "unsupported_association", line, message});
         const name = rubyLiteral(call.args[0]);
@@ -550,9 +568,19 @@ export class RubyDependencyResolver {
     // A qualified mixin may have a unique top-level spelling. Check every
     // ancestor branch for local shadows before using that spelling.
     const qualifiedMixin = !!options.mixin && reference.includes("::");
-    const uninspected = qualifiedMixin ? new Set<string>() : undefined;
+    const uninspected = qualifiedMixin || options.macroTarget ? new Set<string>() : undefined;
     const ancestry = nesting[0] ? this.ancestorLookup(nesting[0], first, new Set(), locals, uninspected, required?.declaration) : "clear";
     if (ancestry !== "clear") {
+      // Literal serializers still name a Ruby constant. When the sole unknown
+      // base is the gem serializer, keep the unique local candidate as inferred.
+      if (ancestry === "unknown" && options.macroTarget && uninspected?.size
+        && [...uninspected].every(base => options.macroTarget === "serializer"
+          ? base === "ActiveModel::Serializer" : base !== "<dynamic>" && !DEVISE_NAMESPACE.test(base))) {
+        const candidate = this.exact(reference, options);
+        if (candidate && (options.macroTarget === "validator" || /(?:^|\/)app\/serializers\//.test(candidate.target))) {
+          return {...candidate, resolution: "inferred"};
+        }
+      }
       // A literal qualified mixin can still identify a file worth inspecting.
       // An inherited first component or an ambiguous provider rules that out.
       const candidateTarget = ancestry === "unknown" && qualifiedMixin
@@ -629,12 +657,22 @@ export class RubyDependencyResolver {
     if (cached) return cached;
     const found: DependencyFact[] = this.inferenceBlocked ? [] : this.specRegistry.dependencies(path);
     for (const ref of this.facts.get(path)?.references ?? []) {
+      if (ref.kind === "validator") {
+        // Built-in validation options do not imply a project dependency.
+        const name = this.lexicalName(ref.reference, ref.nesting);
+        const defs = this.declarations.get(name);
+        if (defs?.length !== 1 || defs[0].kind !== "class" || !defs[0].superclass) continue;
+        const base = this.lexicalName(defs[0].superclass, defs[0].nesting);
+        if (!["ActiveModel::Validator", "ActiveModel::EachValidator"].includes(base) || this.bindings.has(base)
+          || !ref.owner || !this.modelOwner(ref.owner, path, new Set())) continue;
+      }
       if (ref.kind === "association" && ref.owner && !this.modelOwner(ref.owner, path, new Set())) {
         this.addDiagnostic({path, code:"unsupported_association_context", line:ref.line, message:`Association owner ${ref.owner} is not a known ActiveRecord model or model concern`});
         continue;
       }
       const match = this.lookupConstant(ref.reference, {
         nesting: ref.nesting, path, line: ref.line, association: ref.kind === "association",
+        macroTarget: ref.kind === "serializer" || ref.kind === "validator" ? ref.kind : undefined,
         valueRead: ref.kind === "constant", mixin: ref.kind === "include" || ref.kind === "extend", mixinOffset: ref.mixinOffset,
       }, this.mixinResolution);
       if (!match || match.target === path) continue;
