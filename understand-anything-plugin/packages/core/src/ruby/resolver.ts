@@ -353,7 +353,19 @@ export class RubyDependencyResolver {
         const unique = typeof name === "string" && !reflections.has(name);
         if (typeof name === "string") reflections.set(name, null);
         else this.dynamicReflections.add(owner.name);
-        const options = rubyOptions(call.args.slice(1));
+        let classNameCall: Reference["classNameCall"];
+        const options = rubyOptions(call.args.slice(1), (key, value) => {
+          if (key === "class_name") {
+            const selector = rubyCall(value);
+            const receiver = rubyConstant(selector?.receiver);
+            if (selector && receiver && ["name", "to_s"].includes(selector.method) && !selector.args.length
+              && !selector.block && value.childForFieldName("operator")?.text === ".") {
+              classNameCall = {method: selector.method, nesting: [...nesting]};
+              return receiver;
+            }
+          }
+          return rubyLiteral(value);
+        });
         if (inMethod || conditional || call.block || typeof name !== "string" || !/^[a-z][a-z_\d]*$/.test(name) || !options) {
           reject("Association must be an unconditional class/concern macro with literal name and options");
           return;
@@ -373,7 +385,8 @@ export class RubyDependencyResolver {
         const parts = owner.name.split("::");
         while (parts.length) { modelNesting.push(parts.join("::")); parts.pop(); }
         const statement = node.text.replace(/\s+/g, " ");
-        const ref: Reference = {reference: target, displayReference: statement + " => " + target, nesting: modelNesting,
+        const ref: Reference = {reference: target, displayReference: classNameCall ? statement : statement + " => " + target,
+          classNameCall, nesting: modelNesting,
           kind: "association", line, owner: owner.name, reflection: {name, macro: call.method, path}};
         if (options.has("through")) {
           const join = options.get("through"), source = options.get("source");
@@ -808,6 +821,26 @@ export class RubyDependencyResolver {
     return models?.length === 1 ? models[0].name : null;
   }
 
+  /** Ruby evaluates the receiver lexically before Rails applies compute_type
+   * to its fully qualified name, which has no leading ::. */
+  private associationClassName(ref: Reference): string | null {
+    if (!ref.classNameCall) return ref.reference;
+    const {method, nesting} = ref.classNameCall;
+    const path = ref.reflection!.path;
+    const name = this.lexicalName(ref.reference, nesting, this.consumerDeclarations.get(path));
+    const declarations = this.declarations.get(name);
+    if (declarations?.length !== 1 || declarations[0].kind !== "class" || this.overridesClassName(name, method)) return null;
+    const target = this.resolveConstant(ref.reference, {nesting, path, line: ref.line});
+    return target === declarations[0].path && this.bindings.get(name)?.has(target) ? name : null;
+  }
+
+  private overridesClassName(name: string, method: string, seen = new Set<string>()): boolean {
+    if (seen.has(name) || this.blockedPrefix(name)) return true;
+    seen.add(name);
+    return (this.declarations.get(name) ?? []).some(d => d.singletonMethods?.has(method)
+      || !!d.superclass && this.overridesClassName(this.lexicalName(d.superclass, d.nesting), method, new Set(seen)));
+  }
+
   private throughTarget(ref: Reference): string | null {
     const {owner, reflection, through} = ref;
     if (!owner || !reflection || !through || this.dynamicReflections.has(owner)) return null;
@@ -816,10 +849,10 @@ export class RubyDependencyResolver {
       || this.inheritedReflection(owner, through.join)) return null;
     const join = own.get(through.join);
     if (!join?.reflection || join.through || reflection.macro === "has_one" && !["belongs_to", "has_one"].includes(join.reflection.macro)) return null;
-    const resolve = (reference: string, r: Reference, path: string) => this.lookupConstant(reference, {
+    const resolve = (reference: string | null, r: Reference, path: string) => reference && this.lookupConstant(reference, {
       association: true, nesting: r.nesting, line: r.line, path,
     }, "strict")?.target;
-    const joinPath = resolve(join.reference, join, join.reflection.path);
+    const joinPath = resolve(this.associationClassName(join), join, join.reflection.path);
     if (!joinPath || joinPath === reflection.path) return null;
     const joinOwner = this.uniqueModelAt(joinPath);
     if (!joinOwner || this.dynamicReflections.has(joinOwner) || through.sources.some(name => this.inheritedReflection(joinOwner, name))) return null;
@@ -827,10 +860,12 @@ export class RubyDependencyResolver {
     const names = through.sources.filter(name => available?.has(name));
     const source = names.length === 1 && available?.get(names[0]);
     if (!source || source.through || !source.reflection || source.reflection.path !== joinPath) return null;
-    const endpoint = resolve(source.reference, source, joinPath);
+    const sourceName = this.associationClassName(source);
+    const endpoint = resolve(sourceName, source, joinPath);
     // The through reflection computes its class from the outer model. Require
     // the same file as the source reflection even when namespaces differ.
-    return endpoint && this.uniqueModelAt(endpoint) && resolve(through.override ?? source.reference, ref, reflection.path) === endpoint ? endpoint : null;
+    const outerName = through.override ? this.associationClassName(ref) : sourceName;
+    return endpoint && this.uniqueModelAt(endpoint) && resolve(outerName, ref, reflection.path) === endpoint ? endpoint : null;
   }
 
   getDependencies(path: string): DependencyFact[] {
@@ -859,14 +894,17 @@ export class RubyDependencyResolver {
           reference: ref.displayReference, resolution: "inferred"});
         continue;
       }
-      const match = this.lookupConstant(ref.reference, {
+      const name = this.associationClassName(ref);
+      if (!name) continue;
+      const match = this.lookupConstant(name, {
         nesting: ref.nesting, path, line: ref.line, association: ref.kind === "association",
         macroTarget: ref.kind === "serializer" || ref.kind === "validator" ? ref.kind : undefined,
         valueRead: ref.kind === "constant", receiverCall: ref.receiverCall, mixin: ref.kind === "include" || ref.kind === "extend", mixinOffset: ref.mixinOffset,
       }, this.mixinResolution);
       if (!match || match.target === path) continue;
       const display = match.resolution && ref.receiverCall ? ref.reference + "." + ref.receiverCall.method : ref.displayReference ?? ref.reference;
-      found.push({...match, type:ref.kind === "superclass" ? "inherits" : "depends_on", kind:ref.kind, reference:display, line:ref.line});
+      found.push({...match, ...(ref.classNameCall ? {resolution: "inferred" as const} : {}),
+        type:ref.kind === "superclass" ? "inherits" : "depends_on", kind:ref.kind, reference:display, line:ref.line});
     }
     const unique = [...new Map(found.map(f => [JSON.stringify(f),f])).values()].sort((a,b) => compare(a.target,b.target) || compare(a.type,b.type) || compare(a.kind,b.kind) || compare(a.reference ?? "",b.reference ?? "") || (a.line ?? 0) - (b.line ?? 0));
     this.dependencyCache.set(path, unique);

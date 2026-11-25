@@ -773,6 +773,13 @@ describe("bounded Rails dependency resolver", () => {
       expect(resolveThrough({...files, [consumer]: source.replace("menus, through: :links, source: :person", "menus, through: :links")})).toHaveLength(1);
     });
 
+    it("follows class name expressions on the join and source reflections", () => {
+      expect(resolveThrough({...files,
+        [consumer]: files[consumer].replace('"Membership"', "Membership.name"),
+        [join]: files[join].replace('"::Person"', "::Person.to_s"),
+      })).toHaveLength(2);
+    });
+
     it.each([
       ["polymorphic source", "belongs_to :person, polymorphic: true"],
       ["ambiguous source names", "belongs_to :person; has_many :people"],
@@ -797,6 +804,29 @@ describe("bounded Rails dependency resolver", () => {
           .replace("end; end", "end").replaceAll("through: :links", "through: :links, class_name: '::Person'"),
       })).toEqual([]);
     });
+  });
+
+  it("evaluates literal class name receivers lexically before computing the association type", () => {
+    const {resolver} = setup({
+      "app/models/person.rb": "class Person < ApplicationRecord; end",
+      "app/models/admin/person.rb": "module Admin; class Person < ApplicationRecord; end; end",
+      "app/models/renamed.rb": "class Renamed < ApplicationRecord; def self.name; 'Person'; end; end",
+      "app/models/renamed_child.rb": "class RenamedChild < Renamed; end",
+      "app/models/admin/team.rb": `module Admin; class Team < ApplicationRecord
+        belongs_to :leader, :class_name => Person.name
+        belongs_to :assistant, class_name: ::Person.to_s
+        belongs_to :unknown, class_name: provider.name
+        belongs_to :dynamic, class_name: Person.name(1)
+        belongs_to :renamed, class_name: Renamed.name
+        belongs_to :overridden, class_name: Person.name, **opts
+        belongs_to :renamed_child, class_name: RenamedChild.name
+      end; end`,
+    });
+    const facts = resolver.getDependencies("app/models/admin/team.rb").filter(f => f.kind === "association");
+    expect(facts.map(f => [f.line, f.target, f.resolution]).sort()).toEqual([
+      [2, "app/models/admin/person.rb", "inferred"],
+      [3, "app/models/admin/person.rb", "inferred"],
+    ]);
   });
 
   it("rejects polymorphic, through, dynamic options/scopes and arbitrary DSL methods", () => {

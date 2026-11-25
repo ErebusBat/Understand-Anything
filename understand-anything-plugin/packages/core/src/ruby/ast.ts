@@ -70,13 +70,16 @@ export function rubyCall(node: RubyAstNode | null | undefined): {
 
 /** Static options only. A splat, nonliteral value or duplicate key rejects the
  * entire option set. The caller decides which literal options it supports. */
-export function rubyOptions(nodes: RubyAstNode[]): Map<string, RubyLiteral> | null {
+export function rubyOptions(nodes: RubyAstNode[], readValue: (key: string, value: RubyAstNode) => RubyLiteral | undefined =
+  (_key, value) => rubyLiteral(value)): Map<string, RubyLiteral> | null {
   const result = new Map<string, RubyLiteral>();
   for (const node of nodes.flatMap(n => n.type === "hash" ? rubyStatements(n) : [n])) {
     if (node.type !== "pair") return null;
     const key = rubyLiteral(node.childForFieldName("key"));
-    const value = rubyLiteral(node.childForFieldName("value"));
-    if (typeof key !== "string" || value === undefined || result.has(key)) return null;
+    const valueNode = node.childForFieldName("value");
+    if (typeof key !== "string" || !valueNode || result.has(key)) return null;
+    const value = readValue(key, valueNode);
+    if (value === undefined) return null;
     result.set(key, value);
   }
   return result;
