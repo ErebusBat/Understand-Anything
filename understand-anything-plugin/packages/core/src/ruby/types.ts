@@ -21,7 +21,7 @@ export interface DependencyDiagnostic {
   code: string;
   message: string;
   line?: number;
-  /** Unique file for the top-level spelling of an unresolved qualified mixin. */
+  /** Unique file for the top-level spelling of an unresolved mixin. */
   candidateTarget?: string;
 }
 

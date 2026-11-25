@@ -734,7 +734,7 @@ export class RubyDependencyResolver {
       locals = required.locals;
       if (nesting.some(scope => locals?.has(`${scope}::${first}`))) return null;
     }
-    // A qualified mixin may have a unique top-level spelling. Check every
+    // A qualified mixin or a declared concern can identify a top-level provider. Check every
     // ancestor branch for local shadows before using that spelling.
     const providers = options.mixin ? this.declarations.get(reference) : undefined;
     const concern = providers?.length === 1 && providers[0].concernBase
@@ -765,7 +765,7 @@ export class RubyDependencyResolver {
           return {...candidate, resolution: "inferred"};
         }
       }
-      // A literal qualified mixin can still identify a file worth inspecting.
+      // A supported mixin can still identify a file worth inspecting.
       // An inherited first component or an ambiguous provider rules that out.
       const candidateTarget = ancestry === "unknown" && inferredMixin
         && !this.blockedPrefix(reference) && this.declarations.get(reference)?.every(d => d.kind === "module")
