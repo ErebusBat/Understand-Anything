@@ -50,7 +50,7 @@ export class RubyInflections {
     // Explicit common families avoid the incorrect general "strip s" rule.
     const families: [string, string][] = [
       ["analysis", "analyses"], ["basis", "bases"], ["diagnosis", "diagnoses"],
-      ["status", "statuses"], ["alias", "aliases"], ["bus", "buses"],
+      ["status", "statuses"], ["alias", "aliases"], ["bus", "buses"], ["menu", "menus"],
       ["index", "indices"], ["matrix", "matrices"], ["vertex", "vertices"],
       ["quiz", "quizzes"], ["wife", "wives"], ["life", "lives"], ["leaf", "leaves"],
     ];
