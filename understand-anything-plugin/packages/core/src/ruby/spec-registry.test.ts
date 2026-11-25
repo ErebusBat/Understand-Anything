@@ -142,6 +142,19 @@ describe("FactoryBot instance helpers", () => {
     expect(index({...suite, [spec]: suite[spec].replace("require 'spec_helper'", "")})).toEqual([]);
   });
 
+  it("recognizes built-in shared example customization blocks as child example groups", () => {
+    expect(index({...suite, [spec]: `require 'spec_helper'
+      describe Item do
+        it_behaves_like "a model" do
+          let(:record) { create :item }
+        end
+        other.it_should_behave_like "a model" do
+          let(:record) { create :item }
+        end
+      end`,
+    }).map(f => [f.target, f.line])).toEqual([[factory, 4]]);
+  });
+
   it("requires an established Rails root for support loaded through a Rails-root glob", () => {
     const glob = 'Dir[Rails.root.join("spec/support/**/*.rb")].each { |file| require file }';
     const files = {...suite, "spec/spec_helper.rb": glob};

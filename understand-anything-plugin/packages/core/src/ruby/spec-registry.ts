@@ -4,7 +4,7 @@ import type { DependencyFact } from "./types.js";
 
 const sharedDefinitions = new Set(["shared_examples", "shared_examples_for", "shared_context"]);
 const sharedUses = new Set(["include_examples", "include_context", "it_behaves_like", "it_should_behave_like"]);
-const exampleGroups = new Set(["describe", "context", "fdescribe", "fcontext", "xdescribe", "xcontext", ...sharedDefinitions]);
+const exampleGroups = new Set(["describe", "context", "fdescribe", "fcontext", "xdescribe", "xcontext", "it_behaves_like", "it_should_behave_like", ...sharedDefinitions]);
 
 /** The call whose block directly contains this statement (do/end or {}). */
 function blockOwner(node: RubyAstNode): RubyAstNode | null {
