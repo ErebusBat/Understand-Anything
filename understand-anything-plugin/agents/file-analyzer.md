@@ -244,6 +244,8 @@ If the structural data reveals notable language-specific patterns (e.g., many ge
 
 For significant functions and classes from the script output (code files only), create `function:` and `class:` nodes.
 
+When a function has an explicit `owner`, use it to identify the declaring class or module. An `owner` of `null` means the runtime receiver is unknown, as for methods a Rails concern defines in an `included` block. Keep those functions attached to their source file.
+
 **Significance filter** -- only create nodes for:
 - Functions/methods with 10+ lines (skip trivial one-liners)
 - Classes with 2+ methods or 20+ lines

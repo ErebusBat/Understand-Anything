@@ -101,6 +101,10 @@ const MALFORMED_STRUCTURE_ENTRIES = [
     ...VALID_STRUCTURE_ENTRIES.functions,
     params: ['value', 2],
   }],
+  ['a function with an invalid owner', 'functions', {
+    ...VALID_STRUCTURE_ENTRIES.functions,
+    owner: 42,
+  }],
   ['a function with a non-string return type', 'functions', {
     ...VALID_STRUCTURE_ENTRIES.functions,
     returnType: false,

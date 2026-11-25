@@ -135,6 +135,28 @@ describe('extract-structure.mjs — unreadable files vs. files with no parser', 
     expect(run.output.filesSkipped).toEqual([]);
   });
 
+  it('passes concern hook method owners to the file analyzer', () => {
+    const file = 'app/models/concerns/searchable.rb';
+    projectRoot = setupTree({
+      [file]: `module Searchable
+  extend ActiveSupport::Concern
+  included do
+    def search(term); end
+  end
+  class_methods do
+    def indexed; end
+  end
+end`,
+    });
+    const run = runScript({projectRoot, batchFiles: [batchFile(file, 'ruby')], batchImportData: {}});
+    scratchDirs.push(run.scratch);
+    expect(run.status).toBe(0);
+    expect(run.output.results[0].functions).toEqual([
+      {name: 'search', startLine: 4, endLine: 4, params: ['term'], owner: null},
+      {name: 'indexed', startLine: 7, endLine: 7, params: [], owner: 'Searchable::ClassMethods'},
+    ]);
+  });
+
   it('keeps both buckets empty for a fully readable batch', () => {
     projectRoot = setupTree({
       'src/alpha.ts': 'export function alpha(x) { return x + 1; }\n',

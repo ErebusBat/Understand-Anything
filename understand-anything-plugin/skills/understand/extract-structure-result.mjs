@@ -54,6 +54,7 @@ const STRUCTURE_ENTRY_VALIDATORS = {
     typeof entry.name === 'string' &&
     isLineRange(entry.lineRange) &&
     isStringArray(entry.params) &&
+    hasValidOptionalField(entry, 'owner', value => value === null || typeof value === 'string') &&
     hasValidOptionalField(entry, 'returnType', value => typeof value === 'string'),
   classes: entry =>
     typeof entry.name === 'string' &&
@@ -233,6 +234,7 @@ export function buildResult(file, totalLines, nonEmptyLines, analysis, callGraph
       startLine: fn.lineRange[0],
       endLine: fn.lineRange[1],
       params: fn.params || [],
+      ...(fn.owner !== undefined ? { owner: fn.owner } : {}),
     }));
   }
 
