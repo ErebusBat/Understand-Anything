@@ -117,8 +117,13 @@ function hasRecoveredDependency(edge) {
 
 function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths, inventoryChanged,
   rubyMixinResolution = DEFAULT_RUBY_MIXIN_RESOLUTION, forceRefresh = false }) {
-  const rubyPaths = currentScan.files
-    .filter(file => file.language === 'ruby' || isRubyPath(file.path))
+  // These non-Ruby consumers can acquire their first fact when a local
+  // provider, registration, Gemfile or framework configuration changes.
+  const dependencyPaths = currentScan.files
+    .filter(({language, path}) => language === 'ruby' || isRubyPath(path)
+      || /(?:^|\/)app\/views\/.+\.(?:erb|haml|slim)$/.test(path)
+      || (isSprocketsAsset(path) && /\.(?:hbs|handlebars|coffee)$/.test(path))
+      || /(?:^|\/)config\/(?:[^/]+\/)*(?:resque|resque[_-]schedule|schedule)\.ya?ml$/.test(path))
     .map(file => file.path);
   const currentPaths = new Set(currentScan.files.map(file => file.path));
   const previousFactSources = Object.entries(previousScan?.dependencyMap ?? {})
@@ -130,11 +135,11 @@ function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths
   previousFactSources.push(...(graph?.nodes ?? [])
     .filter(node => recoveredSourceIds.has(node.id) && WHOLE_FILE_TYPES.has(node.type))
     .map(node => node.filePath));
-  const candidates = sorted([...rubyPaths, ...previousFactSources].filter(path => currentPaths.has(path)));
+  const candidates = sorted([...dependencyPaths, ...previousFactSources].filter(path => currentPaths.has(path)));
   const candidatePaths = new Set(candidates);
   const versionChanged = previousScan?.dependencyResolverVersion !== RUBY_DEPENDENCY_RESOLVER_VERSION;
   const modeChanged = previousScan?.rubyMixinResolution !== rubyMixinResolution;
-  const missingEntries = rubyPaths.some(path => !Array.isArray(previousScan?.dependencyMap?.[path]));
+  const missingEntries = dependencyPaths.some(path => !Array.isArray(previousScan?.dependencyMap?.[path]));
   // A declaration, association, root, or inflection can change resolution in
   // an unchanged consumer. Fingerprint STRUCTURAL/COSMETIC is not sufficient.
   const contextChanged = inventoryChanged || changedPaths.some(isRubyPath)
@@ -824,8 +829,10 @@ async function main() {
   // Gemfile edits can enable or disable a template processor for unchanged manifests.
   const assetRefresh = dependencyRefresh.versionChanged || currentChangedPaths.some(path => basename(path) === 'Gemfile')
     ? currentInventory.filter(isSprocketsAsset) : [];
+  const rubyRootChanged = currentChangedPaths.some(path => /(?:^|\/)(?:config\/application|lib\/(?:.*\/)?engine)\.rb$/.test(path));
+  const rubyImportRefresh = rubyRootChanged ? currentScan.files.filter(f => f.language === 'ruby').map(f => f.path) : [];
   importAnalysisPaths = sorted([
-    ...importAnalysisPaths, ...assetRefresh, ...(dependencyRefresh.versionChanged ? dependencyRefresh.paths : []),
+    ...importAnalysisPaths, ...assetRefresh, ...rubyImportRefresh, ...(dependencyRefresh.versionChanged ? dependencyRefresh.paths : []),
   ]);
   // Route resolver-only upgrades through merge even on generated-only commits:
   // the SKIP finalizer would otherwise leave the old graph published.

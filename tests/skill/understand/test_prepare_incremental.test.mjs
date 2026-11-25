@@ -270,6 +270,16 @@ describe('typed dependency incremental contracts', () => {
     },
   );
 
+  it('refreshes non-Ruby consumers that have no prior facts when a provider changes', () => {
+    const nonRuby = ['app/views/store/show.html.haml', 'app/assets/templates/store.hbs', 'config/schedule.yml'];
+    const currentScan = { files: [...files, ...nonRuby.map(path => ({path}))] };
+    const previousScan = baseline();
+    for (const path of nonRuby) previousScan.dependencyMap[path] = [];
+    expect(dependencyRefreshPaths({ previousScan, currentScan, graph: {},
+      changedPaths: ['config/initializers/registrations.rb'], inventoryChanged: false }).paths)
+      .toEqual(expect.arrayContaining(nonRuby));
+  });
+
   it('does not refresh Ruby facts for an ordinary non-Ruby edit', () => {
     expect(dependencyRefreshPaths({ previousScan: baseline(), currentScan: { files }, graph: {},
       changedPaths: ['src/extra.js'], inventoryChanged: false }).paths).toEqual([]);
