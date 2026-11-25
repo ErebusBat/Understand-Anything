@@ -3,6 +3,7 @@ import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { classicRailsMajor, detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
+import { RubySpecRegistry } from "./spec-registry.js";
 import { DEFAULT_RUBY_MIXIN_RESOLUTION, type DependencyDiagnostic, type DependencyFact, type RubyDependencyFailure, type RubyInventoryFile, type RubyMixinResolution } from "./types.js";
 
 interface Declaration {
@@ -96,6 +97,7 @@ export class RubyDependencyResolver {
   private readonly blocked = new Set<string>();
   private readonly dependencyCache = new Map<string, DependencyFact[]>();
   private readonly diagnosticKeys = new Set<string>();
+  private readonly specRegistry = new RubySpecRegistry();
   private readonly initializerPaths = new Set<string>();
   private readonly mixinResolution: RubyMixinResolution;
   private indexIncomplete = false;
@@ -118,6 +120,7 @@ export class RubyDependencyResolver {
       }
       try {
         const detected = plugin.withSyntaxTree(path, source, root => {
+          this.specRegistry.index(path, root);
           if (path === "Gemfile") gemfileMajor = classicRailsMajor(root);
           if (!autoloadable) return {application: false, engines: false};
           let engines = false;
@@ -625,7 +628,7 @@ export class RubyDependencyResolver {
   getDependencies(path: string): DependencyFact[] {
     const cached = this.dependencyCache.get(path);
     if (cached) return cached;
-    const found: DependencyFact[] = [];
+    const found: DependencyFact[] = this.inferenceBlocked ? [] : this.specRegistry.dependencies(path);
     for (const ref of this.facts.get(path)?.references ?? []) {
       if (ref.kind === "association" && ref.owner && !this.modelOwner(ref.owner, path, new Set())) {
         this.addDiagnostic({path, code:"unsupported_association_context", line:ref.line, message:`Association owner ${ref.owner} is not a known ActiveRecord model or model concern`});
