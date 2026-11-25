@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, isAbsolute, relative, basename } from "node:path";
 import type { KnowledgeGraph, AnalysisMeta, ProjectConfig } from "../types.js";
 import type { FingerprintStore } from "../fingerprint.js";
+import { DEFAULT_RUBY_MIXIN_RESOLUTION, type RubyMixinResolution } from "../ruby/types.js";
 import { validateGraph } from "../schema.js";
 
 const UA_DIR = ".ua";
@@ -160,6 +161,13 @@ export function loadConfig(projectRoot: string): ProjectConfig {
   } catch {
     return { ...DEFAULT_CONFIG };
   }
+}
+
+export function loadRubyMixinResolution(projectRoot: string): RubyMixinResolution {
+  const mode = loadConfig(projectRoot)?.rubyMixinResolution;
+  if (mode === undefined) return DEFAULT_RUBY_MIXIN_RESOLUTION;
+  if (mode === "strict" || mode === "pragmatic") return mode;
+  throw new Error(`Invalid rubyMixinResolution in ${join(resolveUaDir(projectRoot), CONFIG_FILE)}. Expected "pragmatic" or "strict".`);
 }
 
 const DOMAIN_GRAPH_FILE = "domain-graph.json";

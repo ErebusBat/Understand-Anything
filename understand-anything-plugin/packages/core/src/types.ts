@@ -1,3 +1,5 @@
+import type { RubyMixinResolution } from "./ruby/types.js";
+
 // Node types (27 total: 5 code + 8 non-code + 3 domain + 5 knowledge + 6 design)
 export type NodeType =
   | "file" | "function" | "class" | "module" | "concept"
@@ -168,10 +170,10 @@ export interface AnalysisMeta {
   theme?: ThemeConfig;
 }
 
-// Project config (for auto-update opt-in and language preference)
 export interface ProjectConfig {
   autoUpdate: boolean;
   outputLanguage?: string;
+  rubyMixinResolution?: RubyMixinResolution;
 }
 
 // Non-code structural sub-interfaces

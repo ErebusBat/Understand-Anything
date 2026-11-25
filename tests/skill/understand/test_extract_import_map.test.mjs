@@ -1458,6 +1458,39 @@ describe('extract-import-map.mjs — Ruby resolver', () => {
     expect(selective.output.importMap).toEqual({'app/models/team.rb':['app/models/person.rb'],'README.md':[]});
   });
 
+  it('reads the project mixin mode for full, selective, and empty extraction', () => {
+    const sources = {
+      'config/application.rb': 'class Application < Rails::Application; end',
+      'app/services/audit/marker.rb': 'module Audit::Marker; end',
+      'app/models/item.rb': 'class Item < ExternalRecord; include Audit::Marker; end',
+    };
+    const consumer = 'app/models/item.rb';
+    const target = 'app/services/audit/marker.rb';
+    projectRoot = setupTree(sources);
+    const input = {projectRoot, files: Object.keys(sources).map(path => ({path, language: 'ruby', fileCategory: 'code'}))};
+    const full = runScript(projectRoot, input);
+    expect(full.status, full.stderr).toBe(0);
+    expect(full.output.rubyMixinResolution).toBe('pragmatic');
+    expect(full.output.dependencyMap[consumer]).toContainEqual(expect.objectContaining({
+      target, kind: 'include', resolution: 'inferred',
+    }));
+
+    mkdirSync(join(projectRoot, '.ua'));
+    writeFileSync(join(projectRoot, '.ua', 'config.json'), JSON.stringify({rubyMixinResolution: 'strict'}));
+    const strict = runScript(projectRoot, {...input, analysisPaths: [consumer]});
+    expect(strict.status, strict.stderr).toBe(0);
+    expect(strict.output.rubyMixinResolution).toBe('strict');
+    expect(strict.output.dependencyMap[consumer]).toEqual([]);
+    expect(strict.output.dependencyDiagnostics).toContainEqual(expect.objectContaining({
+      path: consumer, code: 'unsupported_ancestor_lookup', candidateTarget: target,
+    }));
+
+    const empty = runScript(projectRoot, {...input, analysisPaths: []});
+    expect(empty.status, empty.stderr).toBe(0);
+    expect(empty.output.rubyMixinResolution).toBe('strict');
+    expect(empty.output.dependencyMap).toEqual({});
+  });
+
   it('reports unsupported Ruby semantics separately from extractor infrastructure failures', () => {
     const source = {
       'config/application.rb': 'module Demo; class Application < Rails::Application; config.autoload_paths += dynamic_roots; end; end',

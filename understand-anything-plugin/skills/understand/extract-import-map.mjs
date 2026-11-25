@@ -33,9 +33,10 @@
  *     scriptCompleted: true,
  *     stats: { filesScanned, filesWithImports, totalEdges },
  *     importMap: { <path>: [<resolvedPath>, ...], ... },
- *     dependencyMap: { <path>: [{ target, type, kind, reference?, line? }, ...] },
+ *     dependencyMap: { <path>: [{ target, type, kind, reference?, line?, resolution? }, ...] },
  *     dependencyDiagnostics: [{ path, code, message, line?, candidateTarget? }, ...],
  *     dependencyContexts: [{ root, isRails, blocked }, ...],
+ *     rubyMixinResolution: "pragmatic" | "strict",
  *     dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION
  *   }
  *
@@ -95,7 +96,7 @@ try {
 
 const {
   TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers,
-  createRubyWorkspaceDependencyResolver, RUBY_DEPENDENCY_RESOLVER_VERSION,
+  createRubyWorkspaceDependencyResolver, RUBY_DEPENDENCY_RESOLVER_VERSION, loadRubyMixinResolution,
   rubyCall, rubyConstant, rubyLiteral, walkRuby,
 } = core;
 
@@ -1983,6 +1984,7 @@ async function main() {
   }
 
   const analysisFiles = selectAnalysisFiles(files, analysisPaths);
+  const rubyMixinResolution = loadRubyMixinResolution(projectRoot);
 
   if (analysisFiles.length === 0) {
     const output = {
@@ -1993,6 +1995,7 @@ async function main() {
       dependencyMap: {},
       dependencyContexts: [],
       dependencyDiagnostics: [],
+      rubyMixinResolution,
       dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
     };
     writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf-8');
@@ -2041,7 +2044,7 @@ async function main() {
   // Ruby constants depend on declarations/configuration in unchanged files.
   // Build from the complete inventory even when analysisPaths is selective.
   const rubyResolver = treeSitterReady
-    ? createRubyWorkspaceDependencyResolver({ projectRoot, files, plugin: tsPlugin })
+    ? createRubyWorkspaceDependencyResolver({ projectRoot, files, plugin: tsPlugin, mixinResolution: rubyMixinResolution })
     : null;
   if (rubyResolver) failures.push(...rubyResolver.failures);
   const sprockets = createSprocketsResolver(files, scope => {
@@ -2190,6 +2193,7 @@ async function main() {
     dependencyMap,
     dependencyContexts: rubyResolver?.contexts ?? [],
     dependencyDiagnostics: rubyResolver?.diagnostics ?? [],
+    rubyMixinResolution,
     dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
   };
 

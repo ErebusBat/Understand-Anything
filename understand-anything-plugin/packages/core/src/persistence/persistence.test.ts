@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileSync } from "node:fs";
-import { saveGraph, loadGraph, saveMeta, loadMeta, saveFingerprints, loadFingerprints, saveConfig, loadConfig, resolveUaDirName } from "./index.js";
+import { saveGraph, loadGraph, saveMeta, loadMeta, saveFingerprints, loadFingerprints, saveConfig, loadConfig, loadRubyMixinResolution, resolveUaDirName } from "./index.js";
 import { mkdirSync } from "node:fs";
 import type { KnowledgeGraph, AnalysisMeta } from "../types.js";
 import type { FingerprintStore } from "../fingerprint.js";
@@ -180,6 +180,20 @@ describe("persistence", () => {
   });
 
   describe("saveConfig / loadConfig", () => {
+    it("loads the Ruby mixin mode from the active project data directory", () => {
+      saveConfig(tempDir, {autoUpdate: true, outputLanguage: "de"});
+      expect(loadRubyMixinResolution(tempDir)).toBe("pragmatic");
+      saveConfig(tempDir, {autoUpdate: true, rubyMixinResolution: "strict"});
+      expect(loadRubyMixinResolution(tempDir)).toBe("strict");
+
+      const legacy = join(tempDir, ".understand-anything");
+      mkdirSync(legacy);
+      saveConfig(tempDir, {autoUpdate: false, rubyMixinResolution: "pragmatic"});
+      expect(loadRubyMixinResolution(tempDir)).toBe("pragmatic");
+      writeFileSync(join(legacy, "config.json"), JSON.stringify({rubyMixinResolution: "typo"}));
+      expect(() => loadRubyMixinResolution(tempDir)).toThrow(/Invalid rubyMixinResolution.*config\.json/);
+    });
+
     it("should round-trip config correctly", () => {
       saveConfig(tempDir, { autoUpdate: true });
       const loaded = loadConfig(tempDir);

@@ -1821,6 +1821,7 @@ export async function runBenchmark(options, hooks = {}) {
       dependencyContexts: imports.dependencyContexts,
       dependencyDiagnostics: imports.dependencyDiagnostics,
       dependencyResolverVersion: imports.dependencyResolverVersion,
+      rubyMixinResolution: imports.rubyMixinResolution,
     };
     writeJson(enrichedScanPath, enrichedScan);
     onProgress('batching');
