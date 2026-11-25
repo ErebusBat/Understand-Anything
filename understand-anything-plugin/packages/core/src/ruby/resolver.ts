@@ -2,7 +2,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
-import { detectRailsApplication, gemfileUsesClassicRails, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
+import { classicRailsMajor, detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
 import type { DependencyDiagnostic, DependencyFact, RubyDependencyFailure, RubyInventoryFile } from "./types.js";
 
 interface Declaration {
@@ -87,7 +87,7 @@ export class RubyDependencyResolver {
     const paths = [...new Set(options.files.filter(f => f.path.endsWith(".rb") || f.language === "ruby").map(f => f.path))].sort(compare);
     const autoloadPaths = paths.filter(path => path.endsWith(".rb"));
     const trees = new Map<string, { application: boolean; engines: boolean }>();
-    let classicRails = false;
+    let gemfileMajor: number | undefined;
     for (const path of paths) {
       const autoloadable = path.endsWith(".rb");
       let source: string;
@@ -99,7 +99,7 @@ export class RubyDependencyResolver {
       }
       try {
         const detected = plugin.withSyntaxTree(path, source, root => {
-          if (path === "Gemfile") classicRails = gemfileUsesClassicRails(root);
+          if (path === "Gemfile") gemfileMajor = classicRailsMajor(root);
           if (!autoloadable) return {application: false, engines: false};
           let engines = false;
           walkRuby(root, node => {
@@ -115,7 +115,8 @@ export class RubyDependencyResolver {
       }
     }
     this.isRails = [...trees.values()].some(t => t.application || t.engines);
-    this.configuration = initialRubyConfiguration(autoloadPaths, this.isRails);
+    const classicMajor = trees.get("config/application.rb")?.application ? gemfileMajor : undefined;
+    this.configuration = initialRubyConfiguration(autoloadPaths, this.isRails, classicMajor);
     if (!this.isRails) return;
     const engineConfigPrefixes = new Set<string>();
     const engineRoots = new Map<string, string>();
@@ -128,7 +129,7 @@ export class RubyDependencyResolver {
         const prefix = match[1];
         engineRoots.set(path, prefix.replace(/\/$/, ""));
         engineConfigPrefixes.add(`${prefix}config/`);
-        for (const root of initialRubyConfiguration(autoloadPaths.filter(p => p.startsWith(prefix)).map(p => p.slice(prefix.length)), true).roots) {
+        for (const root of initialRubyConfiguration(autoloadPaths.filter(p => p.startsWith(prefix)).map(p => p.slice(prefix.length)), true, classicMajor).roots) {
           this.configuration.roots.push({...root, path: prefix + root.path, provenance: path});
         }
       }
@@ -149,7 +150,7 @@ export class RubyDependencyResolver {
     for (const [path, source] of this.sources) {
       this.facts.set(path, plugin.withSyntaxTree(path, source, root => this.extractFacts(path, root)));
     }
-    this.buildIndex(classicRails && !!trees.get("config/application.rb")?.application);
+    this.buildIndex(classicMajor !== undefined);
   }
 
   get inferenceBlocked(): boolean {

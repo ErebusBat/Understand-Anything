@@ -138,6 +138,23 @@ describe("bounded Rails dependency resolver", () => {
     }));
   });
 
+  it.each([
+    ["3.2.22", false, false], ["4.2.10", true, false], ["5.2.8", true, true],
+  ] as const)("uses the conventional concerns directories for Rails %s", (version, modelRoot, jobRoot) => {
+    const {resolver} = setup({
+      Gemfile: `gem 'rails', '~> ${version}'`,
+      "config/application.rb": "class Application < Rails::Application; config.autoload_paths << 'app/services/concerns'; end",
+      "app/models/concerns/auditable.rb": "module Auditable; end",
+      "app/jobs/concerns/retryable.rb": "module Retryable; end",
+      "app/jobs/concerns/traceable.rb": "module Concerns::Traceable; end",
+      "app/services/concerns/observable.rb": "module Observable; end",
+    });
+    expect(resolver.resolveConstant("Auditable")).toBe(modelRoot ? "app/models/concerns/auditable.rb" : null);
+    expect(resolver.resolveConstant("Retryable")).toBe(jobRoot ? "app/jobs/concerns/retryable.rb" : null);
+    expect(resolver.resolveConstant("Concerns::Traceable")).toBe("app/jobs/concerns/traceable.rb");
+    expect(resolver.resolveConstant("Observable")).toBe("app/services/concerns/observable.rb");
+  });
+
   it("preserves ancestor shadowing when a classic concern matches the parent root", () => {
     const {resolver} = setup({
       "Gemfile": "gem 'rails', '~> 4.2.10'",

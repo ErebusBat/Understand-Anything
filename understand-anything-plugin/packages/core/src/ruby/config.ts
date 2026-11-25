@@ -29,32 +29,38 @@ export function detectRailsApplication(root: RubyAstNode): boolean {
 /** Before Rails 6, classic autoloading searched each configured root for a
  * missing constant. Accept only a direct Gemfile requirement that pins the
  * application to one of those major versions. */
-export function gemfileUsesClassicRails(root: RubyAstNode): boolean {
+export function classicRailsMajor(root: RubyAstNode): number | undefined {
   let declarations = 0;
-  let classic = false;
+  let major: number | undefined;
   walkRuby(root, node => {
     const call = rubyCall(node);
     if (call?.method !== "gem" || call.receiver || rubyLiteral(call.args[0]) !== "rails") return;
     declarations++;
     const version = rubyLiteral(call.args[1]);
-    classic = node.parent?.type === "program" && !call.block && call.args.length === 2
-      && call.args.every(arg => arg.type === "string") && typeof version === "string"
-      && /^(?:(?:=|~>)\s*)?[3-5](?:\.\d+)*$/.test(version.trim());
+    if (node.parent?.type === "program" && !call.block && call.args.length === 2
+      && call.args.every(arg => arg.type === "string") && typeof version === "string") {
+      const match = /^(?:(?:=|~>)\s*)?([3-5])(?:\.\d+)*$/.exec(version.trim());
+      if (match) major = Number(match[1]);
+    }
   });
-  return declarations === 1 && classic;
+  return declarations === 1 ? major : undefined;
 }
 
-export function initialRubyConfiguration(paths: string[], isRails: boolean): RubyConfiguration {
+export function initialRubyConfiguration(paths: string[], isRails: boolean, classicMajor?: number): RubyConfiguration {
   const roots = new Set<string>();
   if (isRails) for (const path of paths) {
     const match = path.match(/^app\/([^/]+)\/(.+)$/);
     if (!match || ["assets", "javascript", "views"].includes(match[1])) continue;
     roots.add(`app/${match[1]}`);
-    if (match[2].startsWith("concerns/")) roots.add(`app/${match[1]}/concerns`);
+    if (!match[2].startsWith("concerns/")) continue;
+    // Rails 4 first registered model/controller concerns. Rails 5 widened the
+    // engine's default app glob to {*,*/concerns}.
+    if (classicMajor === 3 || (classicMajor === 4 && !["models", "controllers"].includes(match[1]))) continue;
+    roots.add(`app/${match[1]}/concerns`);
   }
   return {
     isRails,
-    roots: [...roots].sort().map(path => ({path, provenance: "Rails app/{*,*/concerns}", kind: "conventional"})),
+    roots: [...roots].sort().map(path => ({path, provenance: "Rails conventional app directories", kind: "conventional"})),
     ignored: [], inflections: new RubyInflections(), unsafe: false,
   };
 }

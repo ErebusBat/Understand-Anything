@@ -14,7 +14,7 @@ Batching uses the union of imports and typed dependencies for communities and ne
 
 ## Supported subset
 
-The resolver recognizes Rails applications through their configuration's `Rails::Application` inheritance. Conventional roots include existing `app` subdirectories except assets, javascript, and views. Both `app/models` and `app/models/concerns` are roots when they contain Ruby sources. `lib` requires explicit configuration.
+The resolver recognizes Rails applications through their configuration's `Rails::Application` inheritance. Conventional roots include existing `app` subdirectories except assets, javascript, and views. Rails 3 requires explicit configuration for nested concern roots. Rails 4 adds `app/models/concerns` and `app/controllers/concerns`. Rails 5 extends this convention to other `app/*/concerns` directories. `lib` requires explicit configuration. [Rails 3.2 paths](https://github.com/rails/rails/blob/v3.2.22.5/railties/lib/rails/engine/configuration.rb#L39-L49), [Rails 4.2 paths](https://github.com/rails/rails/blob/v4.2.10/railties/lib/rails/engine/configuration.rb), [Rails 5.2 paths](https://github.com/rails/rails/blob/v5.2.8.1/railties/lib/rails/engine/configuration.rb)
 
 By default, the deepest matching root determines the expected constant name. For a classic Rails application, the resolver checks each overlapping root for an unconditional matching declaration. For example, `app/models/concerns/searchable.rb` can declare `Searchable` or `Concerns::Searchable`. The same rule applies to explicitly configured directories such as `lib` and `lib/toolbox`. Competing file paths produce an ambiguity diagnostic.
 
