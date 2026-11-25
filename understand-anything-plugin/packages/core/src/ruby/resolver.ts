@@ -655,7 +655,7 @@ export class RubyDependencyResolver {
   getDependencies(path: string): DependencyFact[] {
     const cached = this.dependencyCache.get(path);
     if (cached) return cached;
-    const found: DependencyFact[] = this.inferenceBlocked ? [] : this.specRegistry.dependencies(path);
+    const found: DependencyFact[] = this.inferenceBlocked ? [] : this.specRegistry.dependencies(path, this.applicationRootKnown);
     for (const ref of this.facts.get(path)?.references ?? []) {
       if (ref.kind === "validator") {
         // Built-in validation options do not imply a project dependency.

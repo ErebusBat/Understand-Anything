@@ -8,12 +8,12 @@ beforeAll(() => plugin.init());
 const spec = "spec/models/item_spec.rb";
 const helper = "spec/support/shared.rb";
 
-function index(files: Record<string, string>) {
+function index(files: Record<string, string>, hasRailsRoot = false) {
   const registry = new RubySpecRegistry();
   for (const [path, source] of Object.entries(files)) {
     plugin.withSyntaxTree(path, source, root => registry.index(path, root));
   }
-  return registry.dependencies(spec);
+  return registry.dependencies(spec, hasRailsRoot);
 }
 
 describe("RSpec shared registrations", () => {
@@ -116,4 +116,44 @@ it("keeps a qualified local reopening from hiding the top-level RSpec registry",
     [helper]: "RSpec.shared_examples :active do; end",
     [spec]: "describe Item do; include_examples :active; end",
   })).toHaveLength(1);
+});
+
+describe("FactoryBot instance helpers", () => {
+  const wiring = "spec/support/factories_dsl.rb";
+  const syntax = "RSpec.configure { |config| config.include FactoryBot::Syntax::Methods }";
+  const factory = "spec/factories/item.rb";
+  const suite = {
+    [wiring]: syntax,
+    [factory]: "FactoryBot.define { factory :item }",
+    "spec/spec_helper.rb": "require_relative 'support/factories_dsl'",
+    [spec]: `require 'spec_helper'
+      describe Item do
+        let(:item) { build(:item) }
+        before { create :item }
+        create(:item)
+        it { other.instance_exec { create(:item) } }
+      end`,
+  };
+
+  it("requires a helper load path, explicit DSL registration, and example-instance scope", () => {
+    expect(index(suite).map(f => [f.line, f.target, f.reference])).toEqual([[3, factory, "build :item"], [4, factory, "create :item"]]);
+    expect(index({...suite, "spec/spec_helper.rb": ""})).toEqual([]);
+    expect(index({...suite, [wiring]: syntax.replace("Syntax::Methods", "Syntax::Methods, type: :model")})).toEqual([]);
+    expect(index({...suite, [spec]: suite[spec].replace("require 'spec_helper'", "")})).toEqual([]);
+  });
+
+  it("requires an established Rails root for support loaded through a Rails-root glob", () => {
+    const glob = 'Dir[Rails.root.join("spec/support/**/*.rb")].each { |file| require file }';
+    const files = {...suite, "spec/spec_helper.rb": glob};
+    expect(index(files, true)).toHaveLength(2);
+    expect(index(files)).toEqual([]);
+    expect(index({...files, "spec/spec_helper.rb": "def unused; " + glob + "; end"}, true)).toEqual([]);
+    expect(index({...files, "spec/spec_helper.rb": "if special?; " + glob + "; end"}, true)).toEqual([]);
+  });
+
+  it("suppresses locally defined builders and helpers that can shadow included methods", () => {
+    expect(index({...suite, "spec/support/model_helpers.rb": "module Helpers; def build(name); end; end",
+      [spec]: suite[spec].replace("before {", "let(:create) { service }\n before {"),
+    })).toEqual([]);
+  });
 });
