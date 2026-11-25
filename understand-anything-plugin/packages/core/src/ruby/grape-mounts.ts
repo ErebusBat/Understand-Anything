@@ -8,7 +8,14 @@ export function grapeMountArguments(body: RubyAstNode): RubyAstNode[] {
   for (const statement of rubyStatements(body)) {
     const call = rubyCall(statement);
     if (!call || call.receiver || call.args.length !== 1) continue;
-    if (call.method === "mount" && !call.block && rubyConstant(call.args[0])) mounts.push(call.args[0]);
+    const [argument] = call.args;
+    if (call.method === "mount" && !call.block) {
+      const location = argument.childForFieldName("value");
+      const endpoint = argument.type === "pair"
+        ? location?.type === "string" && typeof rubyLiteral(location) === "string" && argument.childForFieldName("key")
+        : argument;
+      if (endpoint && rubyConstant(endpoint)) mounts.push(endpoint);
+    }
     const nested = call.block?.childForFieldName("body");
     if (nested && !call.block?.childForFieldName("parameters") && SCOPES.has(call.method)
       && typeof rubyLiteral(call.args[0]) === "string") mounts.push(...grapeMountArguments(nested));

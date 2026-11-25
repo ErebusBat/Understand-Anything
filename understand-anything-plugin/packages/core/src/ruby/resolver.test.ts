@@ -82,8 +82,9 @@ describe("bounded Rails dependency resolver", () => {
           group "shops" do
             resource :orders do
               mount V1::Orders
-              mount ::V1::Absolute
+              mount ::V1::Absolute => "/v2"
               mount V1::NotAnApi
+              mount ::V1::Absolute => computed_path
             end
           end
           def helper; mount V1::Orders; end
