@@ -283,6 +283,21 @@ describe("bounded Rails dependency resolver", () => {
     }));
   });
 
+  it("uses an explicit ActiveSupport concern declaration as evidence for a bare mixin", () => {
+    const {resolver, root, inventory} = setup({
+      "app/concerns/resettable.rb": "module Resettable; extend ::ActiveSupport::Concern; end",
+      "app/models/report.rb": "class Report < External; include Resettable; end",
+      "app/models/nested.rb": "class Nested < External; Resettable = Other; include Resettable; end",
+      "app/models/auth.rb": "class Auth < Devise::Base; include Resettable; end",
+    });
+    expect(resolver.getDependencies("app/models/report.rb")).toContainEqual({
+      type: "depends_on", kind: "include", reference: "Resettable", target: "app/concerns/resettable.rb", line: 1, resolution: "inferred",
+    });
+    for (const path of ["app/models/nested.rb", "app/models/auth.rb"]) expect(targets(resolver, path, "include")).toEqual([]);
+    const strict = createRubyDependencyResolver({projectRoot:root, files:inventory, plugin, mixinResolution:"strict"});
+    expect(targets(strict, "app/models/report.rb", "include")).toEqual([]);
+  });
+
   it("only infers unique, qualified mixin modules without a known lexical or inherited shadow", () => {
     const {resolver} = setup({
       "app/models/features/tracking.rb": "module Features::Tracking; end",

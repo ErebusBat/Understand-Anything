@@ -18,6 +18,7 @@ interface Declaration {
   mixins: string[];
   conditional: boolean;
   wrapsDeclarations?: boolean;
+  concernBase?: string;
   performsJob?: boolean;
   singletonMethods?: Set<string>;
   valueAssignment?: "name" | "qualified";
@@ -323,6 +324,9 @@ export class RubyDependencyResolver {
           owner.mixins.push("<dynamic>");
           this.addDiagnostic({path, code: "unsupported_mixin", line: node.startPosition.row + 1, message: "Only unconditional literal include/extend constants are supported"});
         } else for (const arg of call.args) {
+          if (call.method === "extend" && owner.kind === "module" && rubyConstant(arg)?.replace(/^::/, "") === "ActiveSupport::Concern") {
+            owner.concernBase = rubyConstant(arg)!;
+          }
           // Extend does not participate in instance/class constant ancestors.
           if (call.method === "include") owner.mixins.push(rubyConstant(arg)!);
           reference(arg, nesting, call.method as "include" | "extend", owner.name);
@@ -718,8 +722,12 @@ export class RubyDependencyResolver {
     }
     // A qualified mixin may have a unique top-level spelling. Check every
     // ancestor branch for local shadows before using that spelling.
-    const qualifiedMixin = !!options.mixin && reference.includes("::");
-    const uninspected = qualifiedMixin || options.macroTarget ? new Set<string>() : undefined;
+    const providers = options.mixin ? this.declarations.get(reference) : undefined;
+    const concern = providers?.length === 1 && providers[0].concernBase
+      && this.lexicalName(providers[0].concernBase, [reference, ...providers[0].nesting]) === "ActiveSupport::Concern"
+      && !this.declarations.has("ActiveSupport::Concern") && !this.blockedPrefix("ActiveSupport::Concern");
+    const inferredMixin = !!options.mixin && (reference.includes("::") || concern);
+    const uninspected = inferredMixin || options.macroTarget ? new Set<string>() : undefined;
     const ancestry = nesting[0] ? this.ancestorLookup(nesting[0], first, new Set(), locals, uninspected, required?.declaration) : "clear";
     if (ancestry !== "clear") {
       if (ancestry === "unknown" && options.receiverCall && mixinResolution === "pragmatic") {
@@ -745,7 +753,7 @@ export class RubyDependencyResolver {
       }
       // A literal qualified mixin can still identify a file worth inspecting.
       // An inherited first component or an ambiguous provider rules that out.
-      const candidateTarget = ancestry === "unknown" && qualifiedMixin
+      const candidateTarget = ancestry === "unknown" && inferredMixin
         && !this.blockedPrefix(reference) && this.declarations.get(reference)?.every(d => d.kind === "module")
         ? this.exact(reference, options, undefined, locals)?.target : undefined;
       if (candidateTarget && candidateTarget !== options.path && mixinResolution === "pragmatic" && uninspected
