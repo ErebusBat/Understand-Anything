@@ -830,9 +830,9 @@ async function main() {
   // Gemfile edits can enable or disable a template processor for unchanged manifests.
   const assetRefresh = dependencyRefresh.versionChanged || currentChangedPaths.some(path => basename(path) === 'Gemfile')
     ? currentInventory.filter(isSprocketsAsset) : [];
-  // A gem's load paths or the Gemfile selecting it can retarget an unchanged require.
+  // Bundler and Rails configuration can retarget unchanged Ruby file loads.
   const rubyLoadPathsChanged = currentChangedPaths.some(path => basename(path) === 'Gemfile' || path.endsWith('.gemspec')
-    || /(?:^|\/)(?:config\/application|lib\/(?:.*\/)?engine)\.rb$/.test(path));
+    || /(?:^|\/)(?:config\/.+|lib\/(?:.*\/)?engine)\.rb$/.test(path));
   const rubyImportRefresh = rubyLoadPathsChanged ? currentScan.files.filter(f => f.language === 'ruby').map(f => f.path) : [];
   importAnalysisPaths = sorted([
     ...importAnalysisPaths, ...assetRefresh, ...rubyImportRefresh, ...(dependencyRefresh.versionChanged ? dependencyRefresh.paths : []),

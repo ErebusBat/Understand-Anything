@@ -394,6 +394,22 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
   }
   const targets = (scan, source = consumer) => [...new Set(scan.dependencyMap[source].map(fact => fact.target))].sort();
 
+  it.each(['remove cassette', 'change directory'])('refreshes an unchanged VCR spec after %s', change => {
+    const spec = 'spec/gateway_spec.rb', config = 'spec/support/vcr.rb', cassette = 'spec/vcr/account.yml';
+    const contents = "VCR.configure { |c| c.cassette_library_dir = Rails.root.join('spec', 'vcr') }";
+    const f = railsFixture({
+      [spec]: "require 'support/vcr'\nVCR.use_cassette(:account) { lookup }",
+      [config]: contents, [cassette]: 'http_interactions: []',
+    });
+    expect(targets(f.read('scan-result.json'), spec)).toEqual([cassette]);
+    if (change === 'remove cassette') unlinkSync(join(f.root, cassette));
+    else writeProjectFile(f.root, config, contents.replace("'vcr'", "'other'"));
+    commit(f.root, change);
+    const result = prepare(f.root, f.baseCommit);
+    expect(result.plan.dependencyMapRefreshPaths).toContain(spec);
+    expect(targets(result.scan, spec)).toEqual([]);
+  });
+
   it('publishes a new markup dependency at the same commit and clears it after a template edit', () => {
     const view = 'app/views/people/show.html.erb';
     const partial = 'app/views/shared/_person.html.erb';
@@ -734,6 +750,19 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
       expect(result.plan.importMapRefreshPaths).toContain(consumer);
       expect(result.scan.importMap[consumer]).toEqual(expected);
     }
+  });
+
+  it('drops stale require_dependency imports after an initializer makes load paths dynamic', () => {
+    const config = 'config/initializers/search.rb', consumer = 'reader.rb';
+    const f = setupRepository({
+      'config/application.rb': 'class App < Rails::Application; end',
+      [consumer]: 'require_dependency "topic"', [config]: '', 'lib/topic.rb': '',
+    });
+    writeProjectFile(f.root, config, 'Rails.application.config.autoload_paths << ENV.fetch("EXTRA_PATH")');
+    commit(f.root, 'configure Rails dependency search path');
+    const result = prepare(f.root, f.baseCommit);
+    expect(result.plan.importMapRefreshPaths).toContain(consumer);
+    expect(result.scan.importMap[consumer]).toEqual([]);
   });
 
   it('refreshes unchanged asset manifests on resolver upgrades and processor changes', () => {
