@@ -135,7 +135,7 @@ describe('Rails dependencies through extraction, batching and deterministic merg
     const extractionText = readFileSync(output, 'utf-8');
     const extraction = JSON.parse(extractionText);
     expect(extraction.failures).toEqual([]);
-    expect(extraction.dependencyResolverVersion).toBe(6);
+    expect(extraction.dependencyResolverVersion).toBe(7);
     expect(extraction.importMap['app/services/check.rb']).toEqual(['lib/explicit.rb']);
     expect(extraction.importMap['app/models/partner.rb']).toEqual([]);
     const facts = extraction.dependencyMap['app/models/partner.rb'];
