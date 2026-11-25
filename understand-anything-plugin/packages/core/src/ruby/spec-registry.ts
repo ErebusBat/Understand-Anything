@@ -83,6 +83,12 @@ function factoryScopedSequence(node: RubyAstNode): boolean {
   return false;
 }
 
+function symbolOptions(args: RubyAstNode[]): RubyAstNode[] {
+  // 'factory': is a symbol label, while 'factory' => is a string override.
+  return args.flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])
+    .filter(opt => opt.childForFieldName("key")?.type !== "string" || !opt.children.some(child => child.type === "=>"));
+}
+
 class FactoryRegistrations {
   private readonly providers: Record<FactoryRegistry, Providers> = {FactoryBot: new Map(), FactoryGirl: new Map()};
   private readonly unknownNames: Record<FactoryRegistry, FactoryNameBounds[]> = {FactoryBot: [], FactoryGirl: []};
@@ -93,9 +99,8 @@ class FactoryRegistrations {
     let unknown = typeof name === "string" ? null : factoryNameBounds(args[0]);
     // A sequence may start at a literal value before its options hash.
     const optionsStart = sequence && args[1] && ["integer", "string", "simple_symbol"].includes(args[1].type) ? 2 : 1;
-    for (const opt of args.slice(optionsStart).flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])) {
+    for (const opt of symbolOptions(args.slice(optionsStart))) {
       const keyNode = opt.type === "pair" ? opt.childForFieldName("key") : null;
-      if (keyNode?.type === "string") continue; // Ruby option lookup uses the symbol :aliases.
       const key = rubyLiteral(keyNode);
       if (typeof key !== "string") { unknown = {prefix: "", suffix: ""}; continue; }
       if (key !== "aliases") continue;
@@ -162,7 +167,7 @@ export class RubySpecRegistry {
       if (method === "association" && !receiver && !call.block && factoryFile) {
         const owner = blockOwner(node), enclosing = rubyCall(owner);
         const registry = owner && enclosing && !enclosing.receiver && ["factory", "trait"].includes(enclosing.method) && factoryDefinition(owner);
-        const name = rubyLiteral(args[0]), options = rubyOptions(args.slice(1));
+        const name = rubyLiteral(args[0]), options = rubyOptions(symbolOptions(args.slice(1)));
         if (!registry || typeof name !== "string" || !options) return;
         const key = options.has("factory") ? options.get("factory") : name;
         if (typeof key === "string") sites.push({kind: "factory_association", registry, key, line: node.startPosition.row + 1,

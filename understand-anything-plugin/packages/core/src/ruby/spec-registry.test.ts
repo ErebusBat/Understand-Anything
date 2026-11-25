@@ -132,12 +132,16 @@ describe("legacy FactoryGirl suites", () => {
         association :card, factory: dynamic_name
         association :card, **overrides
         fake.association :card
+        association :card, "factory" => :not_a_factory
+        association :instrument, "factory": :payment_card
       end
     end`;
     const files = {...suite, [source]: association};
     expect(index(files, false, source)).toEqual([
       {target: factory, kind: "factory_association", type: "depends_on", resolution: "inferred", reference: "association :card", line: 3},
       {target: factory, kind: "factory_association", type: "depends_on", resolution: "inferred", reference: "association :instrument => payment_card", line: 4},
+      {target: factory, kind: "factory_association", type: "depends_on", resolution: "inferred", reference: "association :card", line: 10},
+      {target: factory, kind: "factory_association", type: "depends_on", resolution: "inferred", reference: "association :instrument => payment_card", line: 11},
     ]);
     expect(index({...files, [source]: "FactoryGirl = Other\n" + association}, false, source)).toEqual([]);
   });
