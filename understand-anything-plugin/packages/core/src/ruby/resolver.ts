@@ -120,7 +120,11 @@ export class RubyDependencyResolver {
   constructor(options: RubyDependencyResolverOptions) {
     const {projectRoot, plugin} = options;
     this.mixinResolution = options.mixinResolution ?? DEFAULT_RUBY_MIXIN_RESOLUTION;
-    const paths = [...new Set(options.files.filter(f => f.path.endsWith(".rb") || f.language === "ruby").map(f => f.path))].sort(compare);
+    if (options.files.some(f => f.path === ".rspec")) {
+      try { this.specRegistry.readDefaultOptions(readFileSync(safeRubySourcePath(projectRoot, ".rspec"), "utf8")); }
+      catch (error) { this.failures.push({path: ".rspec", stage: "ruby-file-read", message: errorMessage(error)}); }
+    }
+    const paths = [...new Set(options.files.filter(f => f.path !== ".rspec" && (f.path.endsWith(".rb") || f.language === "ruby")).map(f => f.path))].sort(compare);
     const autoloadPaths = paths.filter(path => path.endsWith(".rb"));
     const trees = new Map<string, { application: boolean; engines: boolean }>();
     let gemfileMajor: number | undefined;

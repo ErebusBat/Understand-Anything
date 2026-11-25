@@ -11,7 +11,8 @@ const helper = "spec/support/shared.rb";
 function index(files: Record<string, string>, hasRailsRoot = false) {
   const registry = new RubySpecRegistry();
   for (const [path, source] of Object.entries(files)) {
-    plugin.withSyntaxTree(path, source, root => registry.index(path, root));
+    if (path === ".rspec") registry.readDefaultOptions(source);
+    else plugin.withSyntaxTree(path, source, root => registry.index(path, root));
   }
   return registry.dependencies(spec, hasRailsRoot);
 }
@@ -153,6 +154,14 @@ describe("FactoryBot instance helpers", () => {
         end
       end`,
     }).map(f => [f.target, f.line])).toEqual([[factory, 4]]);
+  });
+
+  it("loads literal default helpers from plain RSpec options", () => {
+    const files = {...suite, [spec]: suite[spec].replace("require 'spec_helper'", "")};
+    expect(index({...files, ".rspec": "--tag ~slow\n--require spec_helper\n--format documentation"})).toHaveLength(2);
+    for (const options of ["--require other", "<%= options %>\n--require spec_helper", "--require spec_helper\n-I custom_lib"]) {
+      expect(index({...files, ".rspec": options})).toEqual([]);
+    }
   });
 
   it("requires an established Rails root for support loaded through a Rails-root glob", () => {

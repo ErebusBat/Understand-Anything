@@ -58,6 +58,22 @@ describe("Ruby workspace contexts", () => {
     ]);
   });
 
+  it("reads only the owning suite's inventoried .rspec helper defaults", () => {
+    const spec = "spec/models/account_spec.rb";
+    const suite = {
+      "config/application.rb": application,
+      "spec/spec_helper.rb": "RSpec.configure { |c| c.include FactoryBot::Syntax::Methods }",
+      "spec/factories/accounts.rb": "FactoryBot.define { factory :account }",
+      [spec]: "RSpec.describe Account do; let(:account) { create :account }; end",
+    };
+    const project = fixture({...nested("first/", suite), ...nested("second/", suite), "first/.rspec": "--require spec_helper"});
+    expect(project.resolve().getDependencies("first/" + spec)).toContainEqual(
+      expect.objectContaining({kind: "factory", target: "first/spec/factories/accounts.rb", resolution: "inferred"}));
+    expect(project.resolve().getDependencies("second/" + spec)).toEqual([]);
+    project.files.splice(project.files.findIndex(f => f.path === "first/.rspec"), 1);
+    expect(project.resolve().getDependencies("first/" + spec)).toEqual([]);
+  });
+
   it("uses each application's Gemfile for its own overlapping concern roots", () => {
     const sources = {
       "config/application.rb": application,

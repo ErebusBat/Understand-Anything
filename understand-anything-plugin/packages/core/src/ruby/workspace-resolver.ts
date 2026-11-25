@@ -31,7 +31,7 @@ export class RubyWorkspaceDependencyResolver {
   private readonly prefixes: string[];
 
   constructor(private readonly options: RubyDependencyResolverOptions) {
-    const files = [...new Map(options.files.filter(f => f.path.endsWith(".rb") || f.language === "ruby").map(f => [f.path, f])).values()]
+    const files = [...new Map(options.files.filter(f => f.path.endsWith(".rb") || f.language === "ruby" || /(?:^|\/)\.rspec$/.test(f.path)).map(f => [f.path, f])).values()]
       .sort((a, b) => compare(a.path, b.path));
     const applications = new Set<string>();
     for (const {path} of files) {

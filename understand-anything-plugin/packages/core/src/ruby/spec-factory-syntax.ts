@@ -22,10 +22,26 @@ export function exampleForBuilder(node: RubyAstNode): RubyAstNode | null {
 
 type HelperLoads = {direct: Set<string>; supportGlob: boolean};
 export class SpecFactorySyntax {
+  private readonly defaultHelpers = new Set<string>();
   private readonly wiring = new Set<string>();
   private readonly loads = new Map<string, HelperLoads>();
   private readonly localShadows = new Map<string, Set<string>>();
   private readonly supportShadows = new Set<string>();
+
+  /** RSpec evaluates ERB in option files. Restrict this pass to complete,
+   * common literal option lines; custom options can change the load path. */
+  readDefaultOptions(content: string): void {
+    if (content.includes("<%")) return;
+    const helpers: string[] = [];
+    for (const raw of content.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const required = line.match(/^(?:--require(?:\s+|=)|-r\s*)(spec_helper|rails_helper)(?:\.rb)?$/);
+      if (required) helpers.push("spec/" + required[1] + ".rb");
+      else if (!/^(?:--(?:color|no-color|profile|fail-fast|warnings)|--(?:tag|format|order)\s+[~\w:.-]+)$/.test(line)) return;
+    }
+    for (const helper of helpers) this.defaultHelpers.add(helper);
+  }
 
   indexLoads(path: string, root: RubyAstNode): void {
     const direct = new Set<string>();
@@ -84,9 +100,9 @@ export class SpecFactorySyntax {
 
   available(path: string, method: string, hasRailsRoot: boolean): boolean {
     if (!this.wiring.size || this.supportShadows.has(method) || this.localShadows.get(path)?.has(method)) return false;
-    const loads = this.loads.get(path)?.direct;
-    if (!loads) return false;
-    for (const target of loads) {
+    const direct = this.loads.get(path)?.direct ?? [];
+    const defaults = path.endsWith("_spec.rb") ? this.defaultHelpers : [];
+    for (const target of [...direct, ...defaults]) {
       if (this.wiring.has(target)) return true;
       if (!standardHelper.test(target)) continue;
       const helper = this.loads.get(target);

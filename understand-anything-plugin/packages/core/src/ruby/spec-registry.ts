@@ -63,6 +63,10 @@ export class RubySpecRegistry {
   private readonly localReplacements = new Map<string, Set<string>>();
   private factoryNamesComplete = true;
 
+  readDefaultOptions(content: string): void {
+    this.factorySyntax.readDefaultOptions(content);
+  }
+
   index(path: string, root: RubyAstNode): void {
     if (!path.startsWith("spec/") || !path.endsWith(".rb")) return;
     this.factorySyntax.indexLoads(path, root);
