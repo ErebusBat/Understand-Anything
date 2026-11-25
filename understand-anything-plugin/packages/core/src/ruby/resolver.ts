@@ -421,6 +421,20 @@ export class RubyDependencyResolver {
   private buildIndex(classicRails: boolean): void {
     const roots = [...new Map(this.configuration.roots.map(r => [r.path, r])).values()].sort((a,b) => b.path.length - a.path.length || compare(a.path,b.path));
     const expectedOwners = new Map<string, string[]>();
+    const classicNames = new Map<string, Set<string>>();
+    if (classicRails) {
+      for (const [path, {declarations}] of this.facts) {
+        if (!path.endsWith(".rb") || !declarations.length) continue;
+        const features = roots.filter(root => path.startsWith(root.path + "/")).map(root => path.slice(root.path.length + 1, -3));
+        for (const declaration of declarations) {
+          if (declaration.conditional) continue;
+          const feature = this.configuration.inflections.underscore(declaration.name);
+          if (!features.includes(feature)) continue;
+          if (!classicNames.has(feature)) classicNames.set(feature, new Set());
+          classicNames.get(feature)!.add(declaration.name);
+        }
+      }
+    }
     const classWrappers = new Set<Declaration>();
     const valueCandidates = new Set<Declaration>();
     for (const [path, facts] of this.facts) {
@@ -442,9 +456,11 @@ export class RubyDependencyResolver {
       // nested root its own top-level namespace. A path alone never creates a
       // file binding, but a competing path can still intercept the lookup.
       const eligibleRoots = classicRails ? matchingRoots : matchingRoots.slice(0, 1);
-      const expected = [...new Set(eligibleRoots
-        .map(root => this.configuration.inflections.camelize(path.slice(root.path.length + 1, -3), true))
-        .filter(name => name !== null))];
+      const expected = [...new Set(eligibleRoots.flatMap(root => {
+        const feature = path.slice(root.path.length + 1, -3);
+        const conventional = this.configuration.inflections.camelize(feature, true);
+        return conventional ? [conventional, ...(classicNames.get(feature) ?? [])] : [];
+      }))];
       for (const name of expected) expectedOwners.set(name, [...(expectedOwners.get(name) ?? []), path]);
       const corroborated = expected.filter(name => facts.declarations.some(d => d.name === name && (d.kind !== "assignment" || d.valueAssignment) && !d.conditional));
       if (matchingRoots.length && !corroborated.length) this.addDiagnostic({

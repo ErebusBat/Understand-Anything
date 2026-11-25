@@ -29,6 +29,19 @@ export class RubyInflections {
     }).join("::");
   }
 
+  /** Classic Rails derives the feature path from the requested constant. */
+  underscore(name: string): string {
+    let path = name.replace(/::/g, "/");
+    if (this.acronyms.size) {
+      const acronyms = [...this.acronyms.values()].join("|");
+      const pattern = new RegExp(`(?:(?<=[A-Za-z0-9])|\\b)(${acronyms})(?=\\b|[^a-z])`, "g");
+      path = path.replace(pattern, (match: string, _: string, offset: number) =>
+        (offset && /[A-Za-z0-9]/.test(path[offset - 1]) ? "_" : "") + match.toLowerCase());
+    }
+    return path.replace(/([A-Z\d]+)([A-Z][a-z])/g, "$1_$2")
+      .replace(/([a-z\d])([A-Z])/g, "$1_$2").toLowerCase();
+  }
+
   singularize(value: string): string | null {
     return this.inflectLast(value, false);
   }

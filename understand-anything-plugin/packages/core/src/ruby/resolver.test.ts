@@ -120,6 +120,23 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.diagnostics).toEqual([]);
   });
 
+  it("indexes declared acronym spellings by their classic Rails require paths", () => {
+    const files = {
+      "app/api/svg_stamp.rb": "class SVGStamp; end",
+      "app/services/qr/badge.rb": "module QR; class Badge; end; end",
+      "app/services/api/restful_client.rb": "module API; class RESTfulClient; end; end",
+      "config/initializers/inflections.rb": "ActiveSupport::Inflector.inflections(:en) { |i| i.acronym 'RESTful' }",
+    };
+    const classic = setup({...files, Gemfile: "gem 'rails', '~> 4.2'"}).resolver;
+    expect(classic.resolveConstant("SVGStamp")).toBe("app/api/svg_stamp.rb");
+    expect(classic.resolveConstant("QR::Badge")).toBe("app/services/qr/badge.rb");
+    expect(classic.resolveConstant("API::RESTfulClient")).toBe("app/services/api/restful_client.rb");
+    expect(classic.resolveConstant("SvgStamp")).toBeNull();
+    expect(setup(files).resolver.resolveConstant("QR::Badge")).toBeNull();
+    const collision = setup({...files, Gemfile: "gem 'rails', '5.2'", "app/models/svg_stamp.rb": "class SvgStamp; end"}).resolver;
+    expect(collision.resolveConstant("SVGStamp")).toBeNull();
+  });
+
   it("uses overlapping configured classic roots and preserves competing paths", () => {
     const {resolver} = setup({
       "Gemfile": "gem 'rails', '5.2.8'",
