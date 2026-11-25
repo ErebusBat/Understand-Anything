@@ -97,6 +97,78 @@ describe("bounded Rails dependency resolver", () => {
     expect(targets(resolver,"app/services/check.rb")).toEqual([]);
   });
 
+  it("resolves declared concerns through either classic autoload root", () => {
+    const {resolver} = setup({
+      "Gemfile": "gem 'rails', '~> 4.2.10'",
+      "config/application.rb": "class Application < Rails::Application; config.autoload_paths << 'app/models/concerns'; end",
+      "app/models/item.rb": `class Item < ApplicationRecord
+        include Concerns::Item::LabelIndex
+        include Concerns::Annotating
+        extend Trackable
+      end`,
+      "app/models/concerns/item/label_index.rb": "module Concerns::Item::LabelIndex; end",
+      "app/models/concerns/annotating.rb": "module Concerns; module Annotating; end; end",
+      "app/models/concerns/trackable.rb": "module Trackable; end; module Unrelated; end",
+    });
+    expect(targets(resolver, "app/models/item.rb", "include")).toEqual([
+      "app/models/concerns/annotating.rb", "app/models/concerns/item/label_index.rb",
+    ]);
+    expect(targets(resolver, "app/models/item.rb", "extend")).toEqual(["app/models/concerns/trackable.rb"]);
+    for (const name of ["Item::LabelIndex", "Annotating", "Concerns::Trackable", "Unrelated"]) {
+      expect(resolver.resolveConstant(name)).toBeNull();
+    }
+    expect(resolver.diagnostics).toEqual([]);
+  });
+
+  it("uses overlapping configured classic roots and preserves competing paths", () => {
+    const {resolver} = setup({
+      "Gemfile": "gem 'rails', '5.2.8'",
+      "config/application.rb": "class Application < Rails::Application; config.autoload_paths += ['lib', 'lib/toolbox']; end",
+      "lib/toolbox/event.rb": "module Toolbox; class Event; end; end",
+      "lib/toolbox/job.rb": "class Job; end",
+      "lib/toolbox/legacy.rb": "module Toolbox::Legacy; end",
+      "app/services/toolbox/legacy.rb": "module Unrelated; end",
+      "probe.rake": "Toolbox::Event.new; Job.new; Toolbox::Legacy.run",
+    });
+    expect(targets(resolver, "probe.rake")).toEqual(["lib/toolbox/event.rb", "lib/toolbox/job.rb"]);
+    expect(resolver.resolveConstant("Event")).toBeNull();
+    expect(resolver.resolveConstant("Toolbox::Job")).toBeNull();
+    expect(resolver.diagnostics).toContainEqual(expect.objectContaining({
+      code: "ambiguous_autoload_root", message: expect.stringContaining("Toolbox::Legacy"),
+    }));
+  });
+
+  it("preserves ancestor shadowing when a classic concern matches the parent root", () => {
+    const {resolver} = setup({
+      "Gemfile": "gem 'rails', '~> 4.2.10'",
+      "config/initializers/external.rb": "module ActiveRecord; class Base; include External::Mixin; end; end",
+      "app/models/concerns/item/label_index.rb": "module Concerns::Item::LabelIndex; end",
+      "app/models/item.rb": `class Item < ActiveRecord::Base
+        include Concerns::Item::LabelIndex
+        include ::Concerns::Item::LabelIndex
+      end`,
+    });
+    expect(resolver.getDependencies("app/models/item.rb")).toEqual([
+      expect.objectContaining({kind: "include", reference: "::Concerns::Item::LabelIndex", line: 3}),
+    ]);
+    expect(resolver.diagnostics).toContainEqual(expect.objectContaining({
+      code: "unsupported_ancestor_lookup", path: "app/models/item.rb", line: 2,
+    }));
+  });
+
+  it.each([
+    "", "gem 'rails', '~> 6.0'", "gem 'rails', '>= 4.2'", "gem 'rails', rails_version",
+    "gem 'rails', '~> 4.2' if enabled?", "gem 'rails', '5'\ngem 'rails', '7' if enabled?",
+  ])("requires an unconditional classic Rails requirement for alternate roots: %s", manifest => {
+    const {resolver} = setup({
+      "Gemfile": manifest,
+      "app/models/concerns/trackable.rb": "module Concerns::Trackable; end",
+      "probe.rb": "Concerns::Trackable.run",
+    });
+    expect(targets(resolver, "probe.rb")).toEqual([]);
+    expect(resolver.diagnostics).toContainEqual(expect.objectContaining({code: "unsupported_constant_mapping"}));
+  });
+
   it("preserves lexical nesting rather than splitting a compact namespace", () => {
     const {resolver} = setup({
       "app/models/admin/user.rb":"module Admin; class User < ApplicationRecord; end; end",
