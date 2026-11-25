@@ -153,7 +153,41 @@ describe("bounded Rails dependency resolver", () => {
     ]);
     expect(resolver.diagnostics).toContainEqual(expect.objectContaining({
       code: "unsupported_ancestor_lookup", path: "app/models/item.rb", line: 2,
+      candidateTarget: "app/models/concerns/item/label_index.rb",
     }));
+  });
+
+  it("only suggests unique, qualified mixin modules without a known lexical or inherited shadow", () => {
+    const {resolver} = setup({
+      "app/models/features/tracking.rb": "module Features::Tracking; end",
+      "app/models/features/colliding.rb": "module Features::Colliding; end",
+      "app/services/features/colliding.rb": "module Features::Colliding; end",
+      "app/models/features/widget.rb": "class Features::Widget; end",
+      "app/models/simple.rb": "module Simple; end",
+      "app/models/shadow.rb": "module Shadow; module Features; end; end",
+      "app/models/probe.rb": `class Probe < External
+        extend Features::Tracking
+        Features::Tracking.inspect
+        extend Features::Colliding
+        extend Features::Widget
+        extend Simple
+      end`,
+      "app/models/inherited.rb": `class Inherited
+        include External
+        include Shadow
+        extend Features::Tracking
+      end`,
+      "app/models/lexical.rb": `class Lexical < External
+        module Features; end
+        extend Features::Tracking
+      end`,
+    });
+    for (const file of ["probe", "inherited", "lexical"]) {
+      expect(targets(resolver, `app/models/${file}.rb`, "extend")).toEqual([]);
+    }
+    expect(resolver.diagnostics.filter(d => d.candidateTarget)).toEqual([
+      expect.objectContaining({path: "app/models/probe.rb", line: 2, candidateTarget: "app/models/features/tracking.rb"}),
+    ]);
   });
 
   it.each([

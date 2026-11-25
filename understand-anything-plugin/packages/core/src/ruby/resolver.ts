@@ -33,6 +33,7 @@ export interface RubyResolveOptions {
   line?: number;
   association?: boolean;
   valueRead?: boolean;
+  mixin?: boolean;
 }
 
 const ASSOCIATIONS = new Set(["belongs_to", "has_one", "has_many", "has_and_belongs_to_many"]);
@@ -466,17 +467,32 @@ export class RubyDependencyResolver {
     // Local inherited constants and mixin constants require Ruby's ancestor
     // rules. We deliberately suppress top-level fallback when those rules can
     // change a result, instead of pretending lexical search is complete.
-    if (nesting[0] && this.ancestorUncertain(nesting[0], first, new Set(), locals)) {
-      this.addDiagnostic({path:options.path ?? null, code:"unsupported_ancestor_lookup", message:`Ancestor constant lookup for ${reference} in ${nesting[0]} is unresolved`, ...(options.line ? {line:options.line} : {})});
+    const qualifiedMixin = !!options.mixin && reference.includes("::");
+    const ancestry = nesting[0] ? this.ancestorLookup(nesting[0], first, new Set(), locals, qualifiedMixin) : "clear";
+    if (ancestry !== "clear") {
+      // A literal qualified mixin can still identify a file worth inspecting.
+      // An inherited first component or an ambiguous provider rules that out.
+      const candidateTarget = ancestry === "unknown" && qualifiedMixin
+        && !this.blockedPrefix(reference) && this.declarations.get(reference)?.every(d => d.kind === "module")
+        ? this.exact(reference, options) : null;
+      this.addDiagnostic({
+        path: options.path ?? null, code: "unsupported_ancestor_lookup",
+        message: `Ancestor constant lookup for ${reference} in ${nesting[0]} is unresolved`,
+        ...(options.line ? {line: options.line} : {}),
+        ...(candidateTarget && candidateTarget !== options.path ? {candidateTarget} : {}),
+      });
       return null;
     }
     return this.exact(reference, options);
   }
 
-  private ancestorUncertain(name: string, first: string, seen: Set<string>, locals?: Map<string, Declaration[]>): boolean {
-    if (seen.has(name) || this.blockedPrefix(name)) return true;
+  private ancestorLookup(
+    name: string, first: string, seen: Set<string>, locals: Map<string, Declaration[]> | undefined, checkOtherAncestors: boolean,
+  ): "clear" | "unknown" | "shadowed" {
+    if (seen.has(name) || this.blockedPrefix(name)) return "shadowed";
     seen.add(name);
     const defs = [...(this.declarations.get(name) ?? []), ...(locals?.get(name) ?? [])];
+    let result: "clear" | "unknown" = "clear";
     for (const def of defs) {
       const bases = [
         ...def.mixins.map(base => ({base, nesting:[def.name, ...def.nesting]})),
@@ -484,18 +500,22 @@ export class RubyDependencyResolver {
       ];
       for (const {base, nesting} of bases) {
         const resolved = this.lexicalName(base, nesting, locals);
-        if (this.blockedPrefix(resolved)) return true;
+        if (this.blockedPrefix(resolved)) return "shadowed";
         // Only a matching first component can shadow this particular lookup.
-        if (this.namespaces.has(`${resolved}::${first}`) || locals?.has(`${resolved}::${first}`)) return true;
-        if (locals?.has(resolved)) return true;
+        if (this.namespaces.has(`${resolved}::${first}`) || locals?.has(`${resolved}::${first}`)) return "shadowed";
+        if (locals?.has(resolved)) return "shadowed";
         // Inspect local reopenings before trusting a well-known framework base.
         // A locally autoloaded lookalike is not evidence of framework identity.
         if ((FRAMEWORK_BASES.has(resolved) || resolved === "ActiveSupport::Concern") && !this.bindings.has(resolved) && !this.declarations.has(resolved)) continue;
-        if (!this.declarations.has(resolved)) return true;
-        if (this.ancestorUncertain(resolved, first, new Set(seen), locals)) return true;
+        const inherited = this.declarations.has(resolved)
+          ? this.ancestorLookup(resolved, first, new Set(seen), locals, checkOtherAncestors) : "unknown";
+        if (inherited !== "clear") {
+          if (!checkOtherAncestors || inherited === "shadowed") return inherited;
+          result = "unknown";
+        }
       }
     }
-    return false;
+    return result;
   }
 
   private lexicalName(reference: string, nesting: string[], locals?: Map<string, Declaration[]>): string {
@@ -517,7 +537,10 @@ export class RubyDependencyResolver {
         this.addDiagnostic({path, code:"unsupported_association_context", line:ref.line, message:`Association owner ${ref.owner} is not a known ActiveRecord model or model concern`});
         continue;
       }
-      const target = this.resolveConstant(ref.reference, {nesting:ref.nesting, path, line:ref.line, association:ref.kind === "association", valueRead:ref.kind === "constant"});
+      const target = this.resolveConstant(ref.reference, {
+        nesting: ref.nesting, path, line: ref.line, association: ref.kind === "association",
+        valueRead: ref.kind === "constant", mixin: ref.kind === "include" || ref.kind === "extend",
+      });
       if (!target || target === path) continue;
       found.push({target, type:ref.kind === "superclass" ? "inherits" : "depends_on", kind:ref.kind, reference:ref.displayReference ?? ref.reference, line:ref.line});
     }

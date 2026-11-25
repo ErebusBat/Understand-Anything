@@ -111,7 +111,10 @@ export class RubyWorkspaceDependencyResolver {
 
   get diagnostics(): DependencyDiagnostic[] {
     const all = [...this.contextDiagnostics, ...this.projects.flatMap(({prefix, resolver}) =>
-      resolver.diagnostics.map(d => ({...d, path: d.path === null ? null : prefix + d.path})))];
+      resolver.diagnostics.map(d => ({
+        ...d, path: d.path === null ? null : prefix + d.path,
+        ...(d.candidateTarget ? {candidateTarget: prefix + d.candidateTarget} : {}),
+      })))];
     return [...new Map(all.map(d => [JSON.stringify(d), d])).values()].sort((a, b) =>
       compare(a.path ?? "", b.path ?? "") || (a.line ?? 0) - (b.line ?? 0)
       || compare(a.code, b.code) || compare(a.message, b.message));
