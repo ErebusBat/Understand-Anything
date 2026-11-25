@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { GraphEdgeSchema } from "../../packages/core/src/schema.ts";
+import { loadGraph, saveGraph } from "../../packages/core/src/persistence/index.ts";
+import { buildExplainContext, formatExplainPrompt } from "../explain-builder.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MERGE_SCRIPT = resolve(__dirname, "../../skills/understand/merge-batch-graphs.py");
@@ -352,6 +354,40 @@ describe('merge-batch-graphs.py typed dependency recovery', () => {
     const first = runMerge().assembled;
     seed({ [source]: facts.slice().reverse(), [target]: [reverse] });
     expect(runMerge().assembled).toEqual(first);
+  });
+
+  it('preserves confirmed and inferred include sites on the same edge through graph queries', () => {
+    const reference = 'Concerns::Account';
+    const confirmed = { target, type: 'depends_on', kind: 'include', reference, line: 3 };
+    const inferred = { ...confirmed, line: 6, resolution: 'inferred' };
+    const oldDescription = 'Uses account.\nResolved dependency facts: include Concerns::Account (line 6).';
+    seed({ [source]: [inferred, confirmed, inferred] }, undefined, [
+      { ...importsEdge(source, target), type: 'depends_on', description: oldDescription },
+    ]);
+    const { assembled } = runMerge();
+    const evidence = [
+      { kind: 'include', reference, line: 3 },
+      { kind: 'include', reference, line: 6, resolution: 'inferred' },
+    ];
+    expect(assembled.edges).toHaveLength(1);
+    expect(assembled.edges[0].dependencyEvidence).toEqual(evidence);
+    expect(assembled.edges[0].description).toBe(
+      'Uses account.\nResolved dependency facts: include Concerns::Account (line 3); inferred include Concerns::Account (line 6).',
+    );
+    saveGraph(projectRoot, {
+      ...assembled, version: '1.0.0', layers: [], tour: [],
+      project: { name: 'fixture', description: '', languages: ['ruby'], frameworks: ['rails'], analyzedAt: '', gitCommitHash: '' },
+    });
+    const context = buildExplainContext(loadGraph(projectRoot), source);
+    expect(context.relevantEdges[0].dependencyEvidence).toEqual(evidence);
+    expect(formatExplainPrompt(context)).toContain('inferred include Concerns::Account (line 6)');
+  });
+
+  it('reads older graphs with unrecognized custom evidence without losing the edge', () => {
+    const oldEdge = { ...importsEdge(source, target), type: 'depends_on', dependencyEvidence: ['from batch'] };
+    const validated = GraphEdgeSchema.parse(oldEdge);
+    expect(validated.target).toBe(oldEdge.target);
+    expect(validated.dependencyEvidence).toBeUndefined();
   });
 
   it('skips missing source/target endpoints, child constructs, self edges, and invalid types', () => {

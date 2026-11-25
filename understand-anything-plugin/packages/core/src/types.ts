@@ -73,6 +73,13 @@ export interface GraphEdge {
   type: EdgeType;
   direction: "forward" | "backward" | "bidirectional";
   description?: string;
+  /** Individual source references supporting a deterministic dependency edge. */
+  dependencyEvidence?: {
+    kind: string;
+    reference?: string;
+    line?: number;
+    resolution?: "inferred";
+  }[];
   weight: number; // 0-1
 }
 

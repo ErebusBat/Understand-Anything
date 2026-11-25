@@ -1213,9 +1213,8 @@ def recover_dependencies_from_scan(
 ) -> tuple[int, list[str]]:
     """Restore typed file dependencies and attribute existing matching edges.
 
-    Evidence is also rendered in description because schema validation strips
-    custom properties. The raw marker supports incremental pruning before that
-    validation. Multiple facts for one source/target/type share one edge.
+    Group distinct source sites on one edge and render their evidence in its
+    description for graph search and explain. The raw marker supports pruning.
     """
     if not scan_result_path.is_file():
         return 0, [f"  dependencyMap recovery skipped — {scan_result_path.name} not found"]
@@ -1265,12 +1264,14 @@ def recover_dependencies_from_scan(
                 evidence["reference"] = fact["reference"]
             if type(fact.get("line")) is int and fact["line"] > 0:
                 evidence["line"] = fact["line"]
+            if fact.get("resolution") == "inferred":
+                evidence["resolution"] = "inferred"
             serialized = json.dumps(evidence, sort_keys=True, ensure_ascii=False)
             grouped.setdefault((target, edge_type), {})[serialized] = evidence
 
         for (target, edge_type), evidence_by_key in sorted(grouped.items()):
             evidence = sorted(evidence_by_key.values(), key=lambda item: (
-                item["kind"], item.get("reference", ""), item.get("line", 0),
+                item["kind"], item.get("reference", ""), item.get("line", 0), item.get("resolution", ""),
             ))
             key = (source, target, edge_type)
             edge = existing.get(key)
@@ -1287,17 +1288,20 @@ def recover_dependencies_from_scan(
             details = []
             for item in evidence:
                 detail = item["kind"]
+                if item.get("resolution") == "inferred":
+                    detail = f"inferred {detail}"
                 if "reference" in item:
                     detail += f" {item['reference']}"
                 if "line" in item:
                     detail += f" (line {item['line']})"
                 details.append(detail)
-            description = "Resolved dependency facts: " + "; ".join(details) + "."
+            prefix = "Resolved dependency facts: "
+            description = prefix + "; ".join(details) + "."
             previous = edge.get("description")
-            if isinstance(previous, str) and previous and description not in previous:
-                edge["description"] = previous + "\n" + description
-            elif not isinstance(previous, str) or not previous:
-                edge["description"] = description
+            # Replace the analyzer's generated evidence line with the current
+            # scan, retaining any other description supplied for this edge.
+            other_lines = [line for line in previous.splitlines() if not line.startswith(prefix)] if isinstance(previous, str) else []
+            edge["description"] = "\n".join([*other_lines, description])
 
     lines.append(f"  Recovered {recovered} typed edges from dependencyMap ({len(dependency_map)} entries scanned)")
     if skipped_source:

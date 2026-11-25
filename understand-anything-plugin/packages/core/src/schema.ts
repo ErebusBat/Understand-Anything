@@ -445,6 +445,12 @@ export const GraphEdgeSchema = z.object({
   type: EdgeTypeSchema,
   direction: z.enum(["forward", "backward", "bidirectional"]),
   description: z.string().optional(),
+  dependencyEvidence: z.array(z.object({
+    kind: z.string(),
+    reference: z.string().optional(),
+    line: z.number().int().positive().optional(),
+    resolution: z.literal("inferred").optional(),
+  })).optional().catch(undefined),
   weight: z.number().min(0).max(1),
 });
 
