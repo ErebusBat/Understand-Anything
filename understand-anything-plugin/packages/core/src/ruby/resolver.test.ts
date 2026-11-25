@@ -299,6 +299,24 @@ describe("bounded Rails dependency resolver", () => {
     ]);
   });
 
+  it("inspects preceding explicit loads for shadows before inferring a qualified mixin", () => {
+    const target = "app/models/features/tracking.rb";
+    const {resolver} = setup({
+      [target]: "module Features::Tracking; end",
+      "lib/shadow.rb": "class Host; Features = Other; end",
+      "lib/replacement.rb": "module Features; Tracking = Other; end",
+      "app/models/host.rb": "require_relative '../../lib/shadow'; class Host < External; include Features::Tracking; end",
+      "app/models/replaced.rb": "require_relative '../../lib/replacement'; class Replaced < External; include Features::Tracking; end",
+      "app/models/plain.rb": "class Plain < External; include Features::Tracking; end",
+    });
+    expect(resolver.getDependencies("app/models/host.rb")).toEqual([]);
+    expect(resolver.getDependencies("app/models/replaced.rb")).toEqual([]);
+    expect(resolver.getDependencies("app/models/plain.rb")).toEqual([
+      expect.objectContaining({kind: "include", target, resolution: "inferred"}),
+    ]);
+    expect(resolver.diagnostics.filter(d => d.candidateTarget)).toEqual([]);
+  });
+
   it.each([
     "", "gem 'rails', '~> 6.0'", "gem 'rails', '>= 4.2'", "gem 'rails', rails_version",
     "gem 'rails', '~> 4.2' if enabled?", "gem 'rails', '5'\ngem 'rails', '7' if enabled?",

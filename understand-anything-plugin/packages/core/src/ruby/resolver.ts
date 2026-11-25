@@ -54,6 +54,7 @@ export interface RubyResolveOptions {
 const ASSOCIATIONS = new Set(["belongs_to", "has_one", "has_many", "has_and_belongs_to_many"]);
 const CONDITIONAL = new Set(["if", "unless", "if_modifier", "unless_modifier", "case", "case_match", "conditional", "while", "until", "while_modifier", "until_modifier", "for", "rescue", "rescue_modifier", "ensure", "begin"]);
 const FRAMEWORK_BASES = new Set(["ActiveRecord::Base", "ActionController::Base", "ActionController::API", "ActionMailer::Base", "ActiveJob::Base", "Object", "BasicObject"]);
+const DEVISE_NAMESPACE = /^Devise(?:::|$)/;
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
@@ -440,14 +441,17 @@ export class RubyDependencyResolver {
    * even when Rails cannot autoload it. Keep unindexed side effects and
    * competing definitions out of this narrowly scoped lookup. */
   private requiredMixin(reference: string, options: RubyResolveOptions, locals?: Map<string, Declaration[]>):
-    {declaration: Declaration; locals?: Map<string, Declaration[]>} | null | undefined {
+    {declaration?: Declaration; locals?: Map<string, Declaration[]>} | null | undefined {
     const name = reference.replace(/^::/, "");
     const offset = options.mixinOffset;
-    if (!options.mixin || offset === undefined || !options.path || name.includes("::")) return;
+    if (!options.mixin || offset === undefined || !options.path) return;
     const requires = this.facts.get(options.path)?.requiredFiles ?? [];
     if (!requires.length) return;
     const paths = new Set(requires.filter(load => load.end <= offset).map(load => load.path));
     const loaded = [...paths].flatMap(path => this.facts.get(path)?.declarations ?? []);
+    // For a qualified module, the autoload index supplies the target. Other
+    // declarations from the explicit loads still participate in shadow checks.
+    if (name.includes("::")) return {locals: this.localsWithLoads(locals, loaded)};
     const matching = loaded.filter(d => d.name === name);
     if (!matching.length) return;
     const declaration = matching.find(d => d.kind === "module" && !d.conditional && !d.nesting.length);
@@ -457,16 +461,19 @@ export class RubyDependencyResolver {
     if (this.declarations.get(name)?.some(d => d.kind !== "module" || (!canonical && d.path !== declaration.path))) return null;
     // Other explicitly loaded files can introduce a lexical shadow or reopen
     // an ancestor, even outside the autoload roots. Keep their evidence local.
-    const extra = loaded.filter(d => d.name !== name && !this.declarations.get(d.name)?.includes(d));
-    if (extra.length) {
-      locals = new Map(locals);
-      for (const d of extra) locals.set(d.name, [...(locals.get(d.name) ?? []), d]);
-    }
-    return {declaration, locals};
+    return {declaration, locals: this.localsWithLoads(locals, loaded.filter(d => d.name !== name))};
   }
 
-  private exact(name: string, options: RubyResolveOptions, required?: Declaration): ConstantMatch | null {
-    const locals = options.path && this.consumerDeclarations.get(options.path);
+  private localsWithLoads(locals: Map<string, Declaration[]> | undefined, loaded: Declaration[]) {
+    const extra = loaded.filter(d => !this.declarations.get(d.name)?.includes(d));
+    if (!extra.length) return locals;
+    const result = new Map(locals);
+    for (const d of extra) result.set(d.name, [...(result.get(d.name) ?? []), d]);
+    return result;
+  }
+
+  private exact(name: string, options: RubyResolveOptions, required?: Declaration,
+    locals = options.path ? this.consumerDeclarations.get(options.path) : undefined): ConstantMatch | null {
     if (locals) {
       let prefix = name;
       while (prefix) {
@@ -505,22 +512,22 @@ export class RubyDependencyResolver {
 
   private lookupConstant(reference: string, options: RubyResolveOptions, mixinResolution: RubyMixinResolution): ConstantMatch | null {
     if (!this.isRails || this.inferenceBlocked || !/^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*$/.test(reference)) return null;
+    let locals = options.path ? this.consumerDeclarations.get(options.path) : undefined;
     if (reference.startsWith("::")) {
-      const required = this.requiredMixin(reference, options);
+      const required = this.requiredMixin(reference, options, locals);
       if (required === null) return null;
-      const target = this.exact(reference.slice(2), options, required?.declaration);
-      return options.association && target && !/(?:^|\/)app\/models\//.test(target.target) ? null : target;
+      const match = this.exact(reference.slice(2), options, required?.declaration, required?.locals);
+      return options.association && match && !/(?:^|\/)app\/models\//.test(match.target) ? null : match;
     }
     const nesting = options.nesting ?? [];
-    let locals = options.path ? this.consumerDeclarations.get(options.path) : undefined;
     if (options.association) {
       // ActiveRecord tries the complete compute_type candidate at each level;
       // this differs from lexical first-component lookup.
       for (const scope of [...nesting, ""]) {
         const name = scope ? `${scope}::${reference}` : reference;
         if (this.blockedPrefix(name)) return this.exact(name, options);
-        const target = this.exact(name, options);
-        if (target && /(?:^|\/)app\/models\//.test(target.target)) return target;
+        const match = this.exact(name, options);
+        if (match && /(?:^|\/)app\/models\//.test(match.target)) return match;
       }
       return null;
     }
@@ -546,9 +553,9 @@ export class RubyDependencyResolver {
       // An inherited first component or an ambiguous provider rules that out.
       const candidateTarget = ancestry === "unknown" && qualifiedMixin
         && !this.blockedPrefix(reference) && this.declarations.get(reference)?.every(d => d.kind === "module")
-        ? this.exact(reference, options)?.target : undefined;
+        ? this.exact(reference, options, undefined, locals)?.target : undefined;
       if (candidateTarget && candidateTarget !== options.path && mixinResolution === "pragmatic" && uninspected
-        && [...uninspected].every(base => base !== "<dynamic>" && !/^Devise(?:::|$)/.test(base))) {
+        && [...uninspected].every(base => base !== "<dynamic>" && !DEVISE_NAMESPACE.test(base))) {
         return {target: candidateTarget, resolution: "inferred"};
       }
       this.addDiagnostic({
@@ -559,7 +566,7 @@ export class RubyDependencyResolver {
       });
       return null;
     }
-    return this.exact(reference, options, required?.declaration);
+    return this.exact(reference, options, required?.declaration, locals);
   }
 
   private ancestorLookup(
@@ -586,7 +593,7 @@ export class RubyDependencyResolver {
         if ((FRAMEWORK_BASES.has(resolved) || resolved === "ActiveSupport::Concern") && !this.bindings.has(resolved) && !this.declarations.has(resolved)) continue;
         // Initializers may reopen an external Devise class or module. Inspect
         // its visible declarations, while preserving the unknown gem ancestry.
-        if (uninspected && /^Devise(?:::|$)/.test(resolved) && !this.bindings.has(resolved)) {
+        if (uninspected && DEVISE_NAMESPACE.test(resolved) && !this.bindings.has(resolved)) {
           uninspected.add(resolved);
           result = "unknown";
         }
