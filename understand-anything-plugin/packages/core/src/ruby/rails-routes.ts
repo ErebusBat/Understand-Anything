@@ -145,7 +145,7 @@ function visitRoutes(body: RubyAstNode | null, scope: RouteScope, resolver: Rout
     const nested = call?.block?.childForFieldName("body") ?? shared;
     const condition = node.childForFieldName("condition");
     if ((node.type === "if" || node.type === "unless") && condition
-      && /^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*(?:\.[a-z_]\w*\??)+$/.test(condition.text)) {
+      && /^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*(?:\.[a-z_]\w*\??)*$/.test(condition.text)) {
       visitRoutes(node.childForFieldName("consequence"), {...scope, guards: [...scope.guards, node.type + " " + condition.text]}, resolver, record, reject);
       const alternative = node.childForFieldName("alternative");
       if (alternative?.type === "else") {

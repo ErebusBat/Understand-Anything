@@ -92,6 +92,20 @@ describe("restricted Rails routes", () => {
     ]);
   });
 
+  it("retains bare constant guards on both branches of a route", () => {
+    const result = extract(`Rails.application.routes.draw do
+      unless ::Settings::INTERNAL
+        resources :people
+      else
+        resources :people
+      end
+    end`);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.dependencies.map(f => f.reference)).toEqual([
+      "resources :people unless ::Settings::INTERNAL", "resources :people if ::Settings::INTERNAL",
+    ]);
+  });
+
   it("skips filtered actions and options that change the controller dynamically", () => {
     const result = extract(`Rails.application.routes.draw do
       resources :people, only: []
