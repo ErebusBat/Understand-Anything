@@ -51,6 +51,7 @@ export class RubySpecRegistry {
   private readonly factories = new Map<string, string | null>();
   private readonly uses = new Map<string, Site[]>();
   private readonly replacedRegistries = new Set<string>();
+  private readonly localReplacements = new Map<string, Set<string>>();
   private factoryNamesComplete = true;
 
   index(path: string, root: RubyAstNode): void {
@@ -61,8 +62,17 @@ export class RubySpecRegistry {
       // A local replacement can redirect even explicitly qualified builders.
       const binding = node.type === "class" || node.type === "module" ? node.childForFieldName("name")
         : node.type === "assignment" ? node.childForFieldName("left") : null;
-      const namePart = rubyConstant(binding)?.split("::").pop();
-      if (namePart === "RSpec" || namePart === "FactoryBot") this.replacedRegistries.add(namePart);
+      const qualified = rubyConstant(binding);
+      const namePart = qualified?.split("::").pop();
+      if (namePart === "RSpec" || namePart === "FactoryBot") {
+        if (qualified === "::" + namePart || qualified === namePart && node.parent?.type === "program") {
+          this.replacedRegistries.add(namePart);
+        } else {
+          const local = this.localReplacements.get(path) ?? new Set<string>();
+          local.add(namePart);
+          this.localReplacements.set(path, local);
+        }
+      }
       const call = rubyCall(node);
       if (!call) return;
       const {method, receiver, args} = call;
@@ -109,7 +119,9 @@ export class RubySpecRegistry {
     const facts: DependencyFact[] = [];
     for (const site of this.uses.get(path) ?? []) {
       const factory = site.kind === "factory";
-      if (this.replacedRegistries.has(factory ? "FactoryBot" : "RSpec") || factory && !this.factoryNamesComplete) continue;
+      const registry = factory ? "FactoryBot" : "RSpec";
+      if (this.replacedRegistries.has(registry) || this.localReplacements.get(path)?.has(registry)
+        || factory && !this.factoryNamesComplete) continue;
       const target = (factory ? this.factories : this.shared).get(site.key);
       if (target && target !== path) {
         facts.push({target, type: "depends_on", kind: site.kind, reference: site.reference, line: site.line, resolution: "inferred"});

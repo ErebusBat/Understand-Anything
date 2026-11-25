@@ -100,7 +100,7 @@ describe("FactoryBot registrations", () => {
   });
 });
 
-it.each(["FactoryBot = LocalRegistry", "module Example; class FactoryBot; end; end"])(
+it.each(["FactoryBot = LocalRegistry", "class ::FactoryBot; end"])(
   "suppresses registry inference when %s may shadow the receiver", declaration => {
     expect(index({
       "spec/support/replacement.rb": declaration,
@@ -109,3 +109,11 @@ it.each(["FactoryBot = LocalRegistry", "module Example; class FactoryBot; end; e
     })).toEqual([]);
   },
 );
+
+it("keeps a qualified local reopening from hiding the top-level RSpec registry", () => {
+  expect(index({
+    "spec/support/ci.rb": "class CI::Reporter::RSpec; end",
+    [helper]: "RSpec.shared_examples :active do; end",
+    [spec]: "describe Item do; include_examples :active; end",
+  })).toHaveLength(1);
+});
