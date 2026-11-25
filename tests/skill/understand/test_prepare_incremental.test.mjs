@@ -718,6 +718,24 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     expect(result.scan.dependencyContexts).toContainEqual({root: 'service/master', isRails: true, blocked: false});
   });
 
+  it('refreshes unchanged Ruby imports when Gemfile selections or gemspec load paths change', () => {
+    const consumer = 'reader.rb', spec = 'gems/widgets/widgets.gemspec';
+    const gemfile = 'gem "widgets", path: "gems/widgets"';
+    const gemspec = dir => `Gem::Specification.new do |s|\n s.name = "widgets"\n s.require_paths = ["${dir}"]\nend`;
+    const sources = {Gemfile: gemfile, [consumer]: 'require "widget"', [spec]: gemspec('lib'),
+      'gems/widgets/lib/widget.rb': '', 'gems/widgets/src/widget.rb': ''};
+    for (const [file, content, expected] of [
+      [spec, gemspec('src'), ['gems/widgets/src/widget.rb']], ['Gemfile', 'gem "json"', []],
+    ]) {
+      const f = setupRepository(sources);
+      writeProjectFile(f.root, file, content);
+      commit(f.root, 'change bundle load path');
+      const result = prepare(f.root, f.baseCommit);
+      expect(result.plan.importMapRefreshPaths).toContain(consumer);
+      expect(result.scan.importMap[consumer]).toEqual(expected);
+    }
+  });
+
   it('refreshes unchanged asset manifests on resolver upgrades and processor changes', () => {
     const manifest = 'app/assets/javascripts/application.js.coffee';
     const target = 'app/assets/templates/menu.hbs';
