@@ -177,7 +177,7 @@ The output JSON has shape:
   },
   "dependencyContexts": [],
   "dependencyDiagnostics": [],
-  "dependencyResolverVersion": 5
+  "dependencyResolverVersion": 6
 }
 ```
 
@@ -237,7 +237,7 @@ Then assemble the final output JSON:
   },
   "dependencyContexts": [],
   "dependencyDiagnostics": [],
-  "dependencyResolverVersion": 5
+  "dependencyResolverVersion": 6
 }
 ```
 
