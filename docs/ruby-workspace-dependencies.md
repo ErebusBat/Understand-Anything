@@ -23,6 +23,9 @@ A literal Gemfile `path:` dependency also exposes the selected gemspec's
 host's bundle. An independent Gemfile scopes its own consumers. A conditional
 path gem can make an import ambiguous. The resolver emits an import only when
 one eligible provider remains across the application and these packages.
+Rails `require_dependency` searches the owning application and engine autoload
+directories first and falls back to normal import lookup. Multiple matching
+autoload roots leave the target unresolved.
 `require_relative` keeps its source-relative behavior. Inferred constants do not
 fall back to a sibling application even when that sibling has a unique matching
 class name. Symlinks must stay within both the workspace and the owning context.

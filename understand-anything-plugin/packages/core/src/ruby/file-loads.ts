@@ -8,7 +8,7 @@ interface PathContext {
 }
 
 interface RubyImport {
-  kind: "relative" | "absolute" | "computed";
+  kind: "relative" | "absolute" | "computed" | "rails_dependency";
   source: string;
 }
 
@@ -140,6 +140,7 @@ function fileGlob(loop: RubyAstNode, ctx: PathContext): RubyGlob | null {
 
 export function collectRubyFileLoads(root: RubyAstNode, file: string, railsRoot: string | null): (RubyImport | RubyGlob)[] {
   const imports: (RubyImport | RubyGlob)[] = [];
+  const railsDependencies: RubyImport[] = [];
   const loops: RubyAstNode[] = [];
   const computed: {arg: RubyAstNode; receiver: RubyAstNode | null; method: string}[] = [];
   const shadows = new Set<string>();
@@ -154,6 +155,11 @@ export function collectRubyFileLoads(root: RubyAstNode, file: string, railsRoot:
 
     const call = rubyCall(node);
     if (call?.block && (call.method === "each" || call.method === "glob")) loops.push(node);
+    if (call?.method === "require_dependency" && !call.receiver && !call.block && call.args.length === 1) {
+      const source = pathString(call.args[0]);
+      if (source) railsDependencies.push({kind: "rails_dependency", source});
+      return;
+    }
     if (!call || !["require","require_relative"].includes(call.method) || call.block || call.args.length !== 1) return;
     if (call.receiver && rubyConstant(call.receiver)?.replace(/^::/, "") !== "Kernel") return;
     const source = pathString(call.args[0]);
@@ -163,6 +169,7 @@ export function collectRubyFileLoads(root: RubyAstNode, file: string, railsRoot:
       computed.push({arg:call.args[0], receiver:call.receiver, method:call.method});
     }
   });
+  if (!shadows.has("require_dependency")) imports.push(...railsDependencies);
   const ctx = {file, railsRoot, shadows};
   for (const {arg, receiver, method} of computed) {
     if (shadows.has(method) || (receiver && !builtin(receiver, "Kernel", ctx))) continue;

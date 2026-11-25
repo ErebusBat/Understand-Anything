@@ -128,6 +128,16 @@ export class RubyWorkspaceDependencyResolver {
     return owner?.resolver.applicationRootKnown ? owner.prefix : null;
   }
 
+  /** Rails searches autoload_paths before Ruby's load path. The configured
+   * root list is unordered, so several matching files cannot select a winner. */
+  requireDependencyTargets(path: string, feature: string): string[] | null {
+    const owner = this.owners.get(path);
+    if (!owner?.resolver.isRails || owner.resolver.inferenceBlocked) return null;
+    return [...new Set(owner.resolver.configuration.roots
+      .map(root => owner.prefix + root.path + "/" + feature)
+      .filter(target => this.owners.get(target) === owner && this.sources.has(target)))];
+  }
+
   get diagnostics(): DependencyDiagnostic[] {
     const all = [...this.contextDiagnostics, ...this.projects.flatMap(({prefix, resolver}) =>
       resolver.diagnostics.map(d => ({

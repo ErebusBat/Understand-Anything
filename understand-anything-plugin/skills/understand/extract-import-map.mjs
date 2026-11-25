@@ -1505,6 +1505,13 @@ export function resolveRubyImport({ kind, source }, file, ctx) {
     return ctx.fileSet.has(base) ? [base] : [];
   }
 
+  if (kind === 'rails_dependency') {
+    if (source.split('/').some(part => !part || part === '.' || part === '..')) return [];
+    const matches = ctx.requireDependencyTargets(file.path, withExt);
+    if (!matches || matches.length > 1) return [];
+    if (matches.length === 1) return matches;
+  }
+
   // Load-path probe order
   const prefix = ctx.rubyRootPrefix ?? '';
   const probes = [`${prefix}lib/${withExt}`, `${prefix}app/${withExt}`, `${prefix}${withExt}`];
@@ -2058,6 +2065,7 @@ async function main() {
     : null;
   if (rubyResolver) {
     failures.push(...rubyResolver.failures);
+    ctx.requireDependencyTargets = (path, feature) => rubyResolver.requireDependencyTargets(path, feature);
     ctx.bundledGemLookup = createBundledGemLookup(tsPlugin, rubyResolver.sources, ctx.fileSet);
   }
   const customTemplateScopes = new Set();

@@ -99,6 +99,34 @@ describe('Ruby filesystem dependencies', () => {
     });
   });
 
+  it('resolves Rails require_dependency in autoload paths before consulting bundle load paths', () => {
+    const sources = {
+      'host/config/application.rb': 'class App < Rails::Application; end',
+      'host/Gemfile': 'gem "billing", path: "gems/billing"',
+      'host/gems/billing/billing.gemspec': 'Gem::Specification.new do |s|; s.name = "billing"; end',
+      'host/gems/billing/lib/billing/types.rb': '', 'host/gems/billing/lib/billing/client.rb': '',
+      'host/app/models/billing/types.rb': '', 'host/app/services/duplicate.rb': '', 'host/app/models/duplicate.rb': '',
+      'host/lib/private.rb': '',
+      'host/use.rb': [
+        'require_dependency "billing/types.rb"', 'require_dependency("billing/client")', 'require_dependency "private"',
+        'require_dependency "duplicate"', 'require_dependency chosen', 'require_dependency "../lib/private"',
+        'other.require_dependency "ignored"', 'Kernel.require_dependency "ignored"',
+      ].join('\n'),
+      'host/lib/ignored.rb': '',
+      'host/redefined.rb': 'def require_dependency(feature); end; require_dependency "private"',
+      'other/config/application.rb': 'class Other < Rails::Application; end',
+      'other/test.rb': 'require_dependency "billing/client"', 'loose/lib/feature.rb': '',
+      'loose/test.rb': 'require_dependency "loose/lib/feature"',
+    };
+    const paths = ['host/use.rb', 'host/redefined.rb', 'other/test.rb', 'loose/test.rb'];
+    const {importMap, failures} = extract(sources, paths);
+    expect(failures).toEqual([]);
+    expect(importMap).toEqual({
+      [paths[0]]: ['host/app/models/billing/types.rb', 'host/gems/billing/lib/billing/client.rb', 'host/lib/private.rb'],
+      [paths[1]]: [], [paths[2]]: [], [paths[3]]: [],
+    });
+  });
+
   it('resolves selected glob members only when the block consumes the yielded path directly', () => {
     const source = 'alpha/lib/config.rb';
     const sources = {
