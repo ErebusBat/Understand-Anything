@@ -16,7 +16,7 @@ function extract(sources, analysisPaths) {
   const files = Object.entries(sources).map(([path, source]) => {
     mkdirSync(join(projectRoot, dirname(path)), {recursive: true});
     writeFileSync(join(projectRoot, path), source);
-    return {path, language: path.endsWith('.yaml') ? 'yaml' : 'ruby', fileCategory: 'code'};
+    return {path, language: /\.ya?ml$/.test(path) ? 'yaml' : 'ruby', fileCategory: 'code'};
   });
   const input = join(projectRoot, 'input.json'), output = join(projectRoot, 'output.json');
   writeFileSync(input, JSON.stringify({projectRoot, files, analysisPaths}));
@@ -56,5 +56,53 @@ describe('Ruby filesystem dependencies', () => {
     expect(importMap['alpha/shadow.rb']).toEqual([]);
     expect(importMap['alpha/dynamic.rb']).toEqual([]);
     expect(importMap['standalone/lib/example/engine.rb']).toEqual([]);
+  });
+  it('resolves selected glob members only when the block consumes the yielded path directly', () => {
+    const source = 'alpha/lib/config.rb';
+    const sources = {
+      'alpha/config/application.rb': 'class App < Rails::Application; end',
+      [source]: [
+        'def load_config',
+        `  pattern = "#{File.expand_path(File.dirname(__FILE__)+'/..')}/config/settings/*.yml"`,
+        '  Dir[pattern].each do |f|',
+        '    values = YAML.load(ERB.new(File.read(f)).result)',
+        '  end',
+        'end',
+        "Dir[Rails.root.join('spec/support/**/*.rb')].each { |path| require path }",
+      ].join('\n'),
+      'alpha/config/settings/z.yml': '', 'alpha/config/settings/a.yml': '',
+      'alpha/config/settings/nested/extra.yml': '', 'alpha/config/settings/.hidden.yml': '',
+      'alpha/spec/support/provider.rb': '', 'alpha/spec/support/sub/another.rb': '',
+      'alpha/spec/support/.hidden.rb': '', 'alpha/spec/support/.old/skip.rb': '',
+      'alpha/spec/support/dummy/config/application.rb': 'class Dummy < Rails::Application; end',
+      'alpha/spec/support/dummy/child.rb': '',
+      'alpha/lib/rejected.rb': [
+        "Dir['spec/support/**/*.rb'].each { |r| require r }",
+        "Dir[Rails.root.join('spec/support/**/*.rb')].each { |r| require r if enabled? }",
+        "Dir[Rails.root.join('spec/support/**/*.rb')].each { |r| r.replace('fake'); require r }",
+        "Dir.glob(Rails.root.join('config/settings/*.yml')) { |f| parse(transform!(f), File.read(f)) }",
+        "path = Rails.root.join('config/settings/*.yml')",
+        "mutate(path)",
+        "Dir[path].each { |f| File.read(f) }",
+        "Dir.glob(Rails.root.join('config/settings/*.{yml,yaml}')) { |f| File.read(f) }",
+      ].join('\n'),
+      'alpha/lib/shadow.rb': [
+        "module Foo", "  Dir = Other",
+        "  Dir.glob(Rails.root.join('config/settings/*.yml')) { |f| File.read(f) }", "end",
+      ].join('\n'),
+    };
+    const result = extract(sources, [source, 'alpha/lib/rejected.rb', 'alpha/lib/shadow.rb']);
+    expect(result.failures).toEqual([]);
+    expect(result.importMap).toEqual({
+      [source]: ['alpha/spec/support/provider.rb', 'alpha/spec/support/sub/another.rb'],
+      'alpha/lib/rejected.rb': [], 'alpha/lib/shadow.rb': [],
+    });
+    const reads = path => result.dependencyMap[path].filter(fact => fact.kind === 'file_read');
+    expect(reads(source)).toEqual(['a', 'z'].map(name => ({
+      type: 'depends_on', kind: 'file_read', reference: 'alpha/config/settings/*.yml',
+      target: 'alpha/config/settings/' + name + '.yml', line: 4,
+    })));
+    expect(reads('alpha/lib/rejected.rb')).toEqual([]);
+    expect(reads('alpha/lib/shadow.rb')).toEqual([]);
   });
 });

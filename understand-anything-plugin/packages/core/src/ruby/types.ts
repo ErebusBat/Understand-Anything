@@ -5,7 +5,7 @@ export interface DependencyFact {
   target: string;
   type: "depends_on" | "inherits" | "routes";
   kind: "constant" | "superclass" | "include" | "extend" | "association" | "route" | "render" | "layout"
-    | "rspec_shared_group" | "factory";
+    | "rspec_shared_group" | "factory" | "file_read";
   reference?: string;
   line?: number;
   /** A qualified mixin matched a local module across uninspected ancestry. */

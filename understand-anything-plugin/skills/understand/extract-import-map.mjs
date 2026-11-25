@@ -1478,7 +1478,7 @@ export function resolveSwiftImport(rawImport, file, ctx) {
 // The general structure extractor drops the distinction between require and
 // require_relative. Inspect the actual call and its literal argument here.
 function parseRubyImports(plugin, path, content, railsRoot) {
-  if (!content.includes('require')) return [];
+  if (!content.includes('require') && !content.includes('Dir')) return [];
   return plugin.withSyntaxTree(path, content, root => collectRubyFileLoads(root, path, railsRoot));
 }
 
@@ -1520,6 +1520,31 @@ export function resolveRubyImport({ kind, source }, file, ctx) {
     if (ctx.fileSet.has(p)) return [p];
   }
   return [];
+}
+
+/** Expand a fixed directory with a single or recursive extension glob. Ruby
+ * skips hidden names unless the pattern names them and does not recurse down
+ * symlinked directories. Checking the canonical spelling also excludes links
+ * into another application. No directories or file contents are enumerated. */
+function resolveRubyGlob(load, ctx) {
+  const parts = load.source.split('/');
+  const suffix = /^\*\.([a-zA-Z0-9]+)$/.exec(parts.pop());
+  if (!suffix || (load.kind === 'require_glob' && suffix[1] !== 'rb')) return [];
+  const recursive = parts.at(-1) === '**';
+  if (recursive) parts.pop();
+  if (parts.some(part => !part || part === '.' || part === '..' || /[?*{}[\]]/.test(part))) return [];
+  const prefix = parts.length ? parts.join('/') + '/' : '';
+  const targets = [];
+  for (const target of ctx.fileSet) {
+    if (!target.startsWith(prefix) || !target.endsWith('.' + suffix[1]) || ctx.rubyRootFor(target) !== ctx.rubyRootPrefix) continue;
+    const rest = target.slice(prefix.length).split('/');
+    if ((!recursive && rest.length !== 1) || rest.some(part => part.startsWith('.'))) continue;
+    const absolute = join(ctx.realProjectRoot, target);
+    try {
+      if (realpathSync(absolute) === absolute) targets.push(target);
+    } catch { /* A missing or unsafe path cannot supply a file endpoint. */ }
+  }
+  return targets.sort(comparePaths);
 }
 
 // ---------------------------------------------------------------------------
@@ -2056,6 +2081,7 @@ async function main() {
       return false;
     }
   });
+  const realProjectRoot = rubyResolver ? realpathSync(projectRoot) : null;
   const dependencyMap = {};
   for (const file of [...analysisFiles].sort((a, b) => comparePaths(a.path, b.path))) {
     const path = toPosix(file.path);
@@ -2124,8 +2150,17 @@ async function main() {
       // resolver reads those calls directly from the Ruby AST. All other tree-sitter
       // languages get analyzed once and dispatched normally.
       if (file.language === 'ruby') {
-        const rubyContext = { ...ctx, rubyRootPrefix: rubyResolver.rootPrefixFor(path), rubyRootFor: target => rubyResolver.rootPrefixFor(target) };
+        const rubyContext = { ...ctx, realProjectRoot, rubyRootPrefix: rubyResolver.rootPrefixFor(path), rubyRootFor: target => rubyResolver.rootPrefixFor(target) };
         for (const imp of parseRubyImports(tsPlugin, path, content, rubyResolver.railsRootFor(path))) {
+          if (imp.kind === 'require_glob' || imp.kind === 'file_read') {
+            for (const target of resolveRubyGlob(imp, rubyContext)) {
+              if (target === path) continue;
+              if (imp.kind === 'file_read') {
+                dependencyMap[path].push({target, type: 'depends_on', kind: imp.kind, reference: imp.source, line: imp.line});
+              } else if (rubyResolver.sources.has(target)) resolvedSet.add(target);
+            }
+            continue;
+          }
           for (const out of resolveRubyImport(imp, file, rubyContext)) {
             if (out && ctx.fileSet.has(out) && (!out.endsWith('.rb') || rubyResolver?.sources.has(out))) resolvedSet.add(out);
           }
