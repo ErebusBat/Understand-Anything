@@ -312,6 +312,63 @@ end
   // ---- Modules ----
 
   describe("extractStructure - modules", () => {
+    it("collects methods installed by direct concern hooks with their receiver scopes", () => {
+      const { tree, parser, root } = parse(`module Billing
+  module Taxable
+    extend ::ActiveSupport::Concern
+    included do
+      def tax(rate); end
+      def self.default_rate; end
+    end
+    class_methods { def gross(amount); calculate(amount); end }
+    def normal; end
+  end
+end`);
+      try {
+        const structure = extractor.extractStructure(root);
+        expect(structure.functions.map(fn => [fn.name, fn.owner, fn.params, fn.lineRange])).toEqual([
+          ["tax", null, ["rate"], [5, 5]],
+          ["self.default_rate", null, [], [6, 6]],
+          ["gross", "Billing::Taxable::ClassMethods", ["amount"], [8, 8]],
+          ["normal", undefined, [], [9, 9]],
+        ]);
+        expect(structure.classes.map(cls => [cls.name, cls.methods])).toEqual([
+          ["Billing", []], ["Billing::Taxable", ["normal"]],
+        ]);
+        const evidence = collectSymbolEvidence(root, structure, "ruby");
+        expect(evidence.coverage.gaps.map(gap => [gap.name, gap.scope.kind])).toEqual([
+          ["tax", "unknown"], ["self.default_rate", "unknown"],
+        ]);
+        expect(extractor.extractCallGraph(root)).toContainEqual({ caller: "gross", callee: "calculate", lineNumber: 8 });
+      } finally { tree.delete(); parser.delete(); }
+    });
+
+    it("skips custom and nested hook lookalikes", () => {
+      const { tree, parser, root } = parse(`module Normal
+  extend Custom::Concern
+  included { def external_dsl; end }
+end
+module Verified
+  included { def before_extend; end }
+  extend ActiveSupport::Concern
+  Other.class_methods { def external_receiver; end }
+  class_methods(:custom) { def different_signature; end }
+  included do
+    callback { def dynamic; end }
+    def Other.outside; end
+  end
+  module Inner
+    included { def unrelated; end }
+  end
+  def self.class_methods; end
+  class_methods { def custom_override; end }
+end`);
+      try {
+        const structure = extractor.extractStructure(root);
+        expect(structure.functions.map(fn => fn.name)).toEqual(["self.class_methods"]);
+      } finally { tree.delete(); parser.delete(); }
+    });
+
     it("treats modules as classes", () => {
       const { tree, parser, root } = parse(`
 module Helpers

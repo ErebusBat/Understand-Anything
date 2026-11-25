@@ -2,6 +2,7 @@ import type { StructuralAnalysis, CallGraphEntry } from "../../types.js";
 import type { LanguageExtractor, TreeSitterNode } from "./types.js";
 import { findChild } from "./base-extractor.js";
 import { nestedRubyClassName } from "../symbol-ast.js";
+import { rubyCall, rubyConstant, rubyStatements } from "../../ruby/ast.js";
 
 /**
  * Set of method names that Ruby uses for imports.
@@ -132,7 +133,7 @@ export class RubyExtractor implements LanguageExtractor {
           break;
 
         case "singleton_method":
-          this.extractSingletonMethod(node, functions);
+          this.extractMethod(node, functions);
           exports.push({
             name: "self." + this.getSingletonMethodName(node),
             lineNumber: node.startPosition.row + 1,
@@ -247,6 +248,7 @@ export class RubyExtractor implements LanguageExtractor {
   private extractMethod(
     node: TreeSitterNode,
     functions: StructuralAnalysis["functions"],
+    owner?: string | null,
   ): void {
     const nameNode = node.childForFieldName("name");
     if (!nameNode) return;
@@ -255,32 +257,13 @@ export class RubyExtractor implements LanguageExtractor {
     const params = extractParams(paramsNode ?? null);
 
     functions.push({
-      name: nameNode.text,
+      name: node.type === "singleton_method" ? "self." + nameNode.text : nameNode.text,
       lineRange: [
         node.startPosition.row + 1,
         node.endPosition.row + 1,
       ],
       params,
-    });
-  }
-
-  private extractSingletonMethod(
-    node: TreeSitterNode,
-    functions: StructuralAnalysis["functions"],
-  ): void {
-    const nameNode = node.childForFieldName("name");
-    if (!nameNode) return;
-
-    const paramsNode = node.childForFieldName("parameters");
-    const params = extractParams(paramsNode ?? null);
-
-    functions.push({
-      name: "self." + nameNode.text,
-      lineRange: [
-        node.startPosition.row + 1,
-        node.endPosition.row + 1,
-      ],
-      params,
+      ...(owner !== undefined ? { owner } : {}),
     });
   }
 
@@ -302,6 +285,8 @@ export class RubyExtractor implements LanguageExtractor {
     });
 
     const body = node.childForFieldName("body");
+    let concern = false;
+    const customHooks = new Set<string>();
     for (const member of body?.namedChildren ?? []) {
       if (member.type === "class" || member.type === "module") {
         const nestedName = nestedRubyClassName(member.childForFieldName("name"), name);
@@ -316,13 +301,31 @@ export class RubyExtractor implements LanguageExtractor {
         const nameNode = member.childForFieldName("name");
         if (nameNode) {
           methods.push("self." + nameNode.text);
-          this.extractSingletonMethod(member, functions);
+          this.extractMethod(member, functions);
+          if (member.childForFieldName("object")?.type === "self") customHooks.add(nameNode.text);
         }
       } else if (member.type === "call") {
-        // Check for attr_accessor/attr_reader/attr_writer
-        const methodNode = member.childForFieldName("method");
-        if (methodNode && ATTR_METHODS.has(methodNode.text)) {
+        const call = rubyCall(member);
+        if (!call) continue;
+        if (ATTR_METHODS.has(call.method)) {
           properties.push(...extractAttrProperties(member));
+        }
+        if (node.type !== "module" || call.receiver) continue;
+        if (call.method === "extend" && !call.block && call.args.some(arg =>
+          rubyConstant(arg)?.replace(/^::/, "") === "ActiveSupport::Concern")) {
+          concern = true;
+        }
+        if (concern && !customHooks.has(call.method) && call.block && !call.args.length
+          && (call.method === "included" || call.method === "class_methods")) {
+          // included evaluates on each host. class_methods evaluates on the
+          // concern's ClassMethods module. Neither defines methods on the concern itself.
+          const owner = call.method === "class_methods" ? name + "::ClassMethods" : null;
+          for (const definition of rubyStatements(call.block.childForFieldName("body"))) {
+            if (definition.type === "method" || (definition.type === "singleton_method"
+              && definition.childForFieldName("object")?.type === "self")) {
+              this.extractMethod(definition, functions, owner);
+            }
+          }
         }
       }
     }
