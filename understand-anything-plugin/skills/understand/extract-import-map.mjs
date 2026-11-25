@@ -2065,6 +2065,13 @@ async function main() {
     ? createRubyWorkspaceDependencyResolver({ projectRoot, files, plugin: tsPlugin, mixinResolution: rubyMixinResolution })
     : null;
   if (rubyResolver) failures.push(...rubyResolver.failures);
+  const customTemplateScopes = new Set();
+  for (const [path, source] of rubyResolver?.sources ?? []) {
+    if (/\bHandlebarsAssets\b/.test(source)) customTemplateScopes.add(rubyResolver.rootPrefixFor(path));
+  }
+  for (const failure of rubyResolver?.failures ?? []) {
+    if (failure.path) customTemplateScopes.add(rubyResolver.rootPrefixFor(failure.path));
+  }
   const sprockets = createSprocketsResolver(files, scope => {
     const gemfile = scope + 'Gemfile';
     const content = rubyResolver?.sources.get(gemfile);
@@ -2080,7 +2087,7 @@ async function main() {
     } catch {
       return false;
     }
-  });
+  }, customTemplateScopes);
   const realProjectRoot = rubyResolver ? realpathSync(projectRoot) : null;
   const dependencyMap = {};
   for (const file of [...analysisFiles].sort((a, b) => comparePaths(a.path, b.path))) {
@@ -2144,6 +2151,7 @@ async function main() {
     let resolved;
     try {
       const resolvedSet = new Set(sprocketsSource ? sprockets.imports(path, content) : []);
+      if (sprocketsSource) dependencyMap[path].push(...sprockets.templateDependencies(path, content));
 
       // Ruby is the only language whose tree-sitter import field doesn't
       // preserve the require vs require_relative discriminator, so the

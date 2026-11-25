@@ -44,16 +44,48 @@ function* directives(content, coffee) {
   }
 }
 
-export function createSprocketsResolver(files, hasHandlebars = () => false) {
+// The default handlebars_assets processor registers underscored filenames as
+// partials. TemplatePath uses the directory after the final templates/ and
+// drops the filename from its first dot onward.
+function partialRegistration(asset) {
+  const prefix = '/templates/';
+  const at = asset.path.lastIndexOf(prefix);
+  if (at < 0) return undefined;
+  const match = /^((?:[\w-]+\/)*_[\w-]+)\.[^/]*$/.exec(asset.path.slice(at + prefix.length));
+  return match?.[1];
+}
+
+function handlebarsPartials(content, registrations, path) {
+  // Raw blocks and inline registrations change how a literal partial tag is
+  // interpreted. Only parse standalone tags in ordinary single-line mustaches.
+  if (!registrations || /\{\{\{\{|\{\{~?\s*#\*\s*inline\b|\{\{~?!|<%/.test(content)) return [];
+  const facts = [];
+  for (const [index, line] of content.split(/\r?\n/).entries()) {
+    if ((line.match(/\{\{/g)?.length ?? 0) !== (line.match(/\}\}/g)?.length ?? 0)) return [];
+    const match = /^\s*\{\{~?\s*>\s*([\w/-]+)\s*~?\}\}\s*$/.exec(line);
+    const target = match && registrations.get(match[1]);
+    if (target && target !== path) facts.push({type: 'depends_on', kind: 'render', reference: match[1], line: index + 1, target});
+  }
+  return facts;
+}
+
+export function createSprocketsResolver(files, hasHandlebars = () => false, customTemplateScopes = new Set()) {
   const sources = new Map();
   const groups = new Map();
   const handlebars = new Map();
+  const partials = new Map();
   for (const { path } of files) {
     const asset = assetInfo(path);
     if (!asset || sources.has(path)) continue;
     if (asset.template) {
       if (!handlebars.has(asset.scope)) handlebars.set(asset.scope, hasHandlebars(asset.scope));
       if (!handlebars.get(asset.scope)) continue;
+      const key = partialRegistration(asset);
+      if (key && !customTemplateScopes.has(asset.scope)) {
+        if (!partials.has(asset.scope)) partials.set(asset.scope, new Map());
+        const registry = partials.get(asset.scope);
+        registry.set(key, registry.has(key) ? null : path);
+      }
     }
     sources.set(path, asset);
     const key = asset.scope + asset.type;
@@ -64,7 +96,11 @@ export function createSprocketsResolver(files, hasHandlebars = () => false) {
   return {
     isSource(path) {
       const source = sources.get(path);
-      return !!source && !source.template;
+      return !!source && (!source.template || partials.has(source.scope));
+    },
+    templateDependencies(path, content) {
+      const source = sources.get(path);
+      return source?.template && !path.endsWith('.erb') ? handlebarsPartials(content, partials.get(source.scope), path) : [];
     },
     imports(path, content) {
       const source = sources.get(path);

@@ -27,7 +27,8 @@ describe('Sprockets require directives', () => {
         [js + 'models/user.js.coffee', 'coffeescript', 'code', ''],
         [js + 'models/nested/other.js', 'javascript', 'code', ''],
         [js + 'after.js', 'javascript', 'code', ''],
-        [views + 'admin/cart.hbs', 'handlebars', 'markup', ''],
+        [views + 'admin/cart.hbs', 'handlebars', 'markup', '{{> admin/_row }}'],
+        [views + 'admin/_row.hbs', 'handlebars', 'markup', ''],
         [views + 'page.html.erb', 'erb', 'markup', ''],
         ['vendor/assets/javascripts/jquery.js', 'javascript', 'code', ''],
         ['other/' + js + 'missing.js', 'javascript', 'code', ''],
@@ -42,17 +43,24 @@ describe('Sprockets require directives', () => {
         writeFileSync(join(root, path), content);
         return { path, language, fileCategory };
       });
-      const analysisPaths = [files[1].path, css + 'application.css', 'other/' + js + 'application.js'];
+      const analysisPaths = [files[1].path, css + 'application.css', 'other/' + js + 'application.js', views + 'admin/cart.hbs'];
       const input = join(root, 'input.json'), output = join(root, 'output.json');
       writeFileSync(input, JSON.stringify({ projectRoot: root, files, analysisPaths }));
       execFileSync(process.execPath, [script, input, output], { stdio: 'pipe' });
       const result = JSON.parse(readFileSync(output, 'utf8'));
       expect(result.failures).toEqual([]);
       expect(result.importMap).toEqual({
-        [analysisPaths[0]]: [js + 'extra file.js', js + 'models/user.js.coffee', views + 'admin/cart.hbs'],
+        [analysisPaths[0]]: [js + 'extra file.js', js + 'models/user.js.coffee', views + 'admin/_row.hbs', views + 'admin/cart.hbs'],
         [analysisPaths[1]]: [css + 'style.scss'],
         [analysisPaths[2]]: [],
+        [analysisPaths[3]]: [],
       });
+      expect(result.dependencyMap[analysisPaths[3]]).toEqual([
+        {type: 'depends_on', kind: 'render', reference: 'admin/_row', line: 1, target: views + 'admin/_row.hbs'},
+      ]);
+      writeFileSync(join(root, 'Gemfile'), "gem 'handlebars_assets'\nHandlebarsAssets::Config.path_prefix = 'pages'");
+      execFileSync(process.execPath, [script, input, output], { stdio: 'pipe' });
+      expect(JSON.parse(readFileSync(output, 'utf8')).dependencyMap[analysisPaths[3]]).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -74,5 +82,28 @@ describe('Sprockets require directives', () => {
       js + 'dir/index.js', js + 'dir/sub/example.js', js + 'item.coffee',
     ]);
     expect(resolver.imports(path, "const example = '\\n//= require dir';")).toEqual([]);
+  });
+});
+
+describe('default handlebars_assets partial registrations', () => {
+  const source = views + 'cart.hbs', target = views + 'shared/_row.hbs';
+  const files = [source, target, 'other/' + target].map(path => ({path}));
+  const resolver = createSprocketsResolver(files, () => true);
+  it('resolves standalone partial tags to a unique registration within the application', () => {
+    expect(resolver.templateDependencies(source, 'items\n {{> shared/_row }}\n{{> (lookup key) }}')).toEqual([
+      {type: 'depends_on', kind: 'render', reference: 'shared/_row', line: 2, target},
+    ]);
+  });
+  it('rejects overrides, ambiguous providers, inline partials, raw blocks, multiline tags and self references', () => {
+    const tag = '{{> shared/_row }}';
+    for (const content of ['{{#*inline "shared/_row"}}\n{{/inline}}\n' + tag, '{{{{raw}}}}\n' + tag,
+      '{{!--\n' + tag + '\n--}}', '{{helper "\n' + tag + '\n"}}']) {
+      expect(resolver.templateDependencies(source, content)).toEqual([]);
+    }
+    for (const r of [createSprocketsResolver(files), createSprocketsResolver(files, () => true, new Set([''])),
+      createSprocketsResolver([...files, {path: 'lib/assets/templates/shared/_row.handlebars'}], () => true)]) {
+      expect(r.templateDependencies(source, tag)).toEqual([]);
+    }
+    expect(resolver.templateDependencies(target, tag)).toEqual([]);
   });
 });
