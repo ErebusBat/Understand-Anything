@@ -75,6 +75,36 @@ describe("bounded Rails dependency resolver", () => {
     expect(targets(resolver, "spec/auth.rb")).toEqual(["app/services/auth/token.rb"]);
   });
 
+  it("links literal mounts between local Grape APIs in routing scopes", () => {
+    const {resolver, root, inventory} = setup({
+      "app/api/v1/root.rb": `module V1
+        class Root < Grape::API
+          group "shops" do
+            resource :orders do
+              mount V1::Orders
+              mount ::V1::Absolute
+              mount V1::NotAnApi
+            end
+          end
+          def helper; mount V1::Orders; end
+          helpers { mount V1::Orders }
+        end
+      end`,
+      "app/api/v1/orders.rb": "module V1; class Orders < Grape::API; end; end",
+      "app/api/v1/absolute.rb": "class V1::Absolute < ::Grape::API; end",
+      "app/api/v1/not_an_api.rb": "class V1::NotAnApi; end",
+      "app/api/other.rb": "class Other; mount ::V1::Orders; end",
+    });
+    const routes = (r: RubyDependencyResolver) => r.getDependencies("app/api/v1/root.rb").filter(f => f.kind === "route");
+    expect(routes(resolver)).toEqual([
+      {target: "app/api/v1/absolute.rb", type: "routes", kind: "route", reference: "mount ::V1::Absolute", line: 6},
+      {target: "app/api/v1/orders.rb", type: "routes", kind: "route", reference: "mount V1::Orders", line: 5, resolution: "inferred"},
+    ]);
+    expect(targets(resolver, "app/api/other.rb", "route")).toEqual([]);
+    const strict = createRubyDependencyResolver({projectRoot:root, files:inventory, plugin, mixinResolution:"strict"});
+    expect(routes(strict)).toEqual([routes(resolver)[0]]);
+  });
+
   it("finds conventional models/controllers, nested concerns, superclass and distinct include/extend", () => {
     const {resolver} = setup({
       "app/controllers/application_controller.rb":"class ApplicationController < ActionController::Base; end",

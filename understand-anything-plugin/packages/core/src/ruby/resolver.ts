@@ -3,6 +3,7 @@ import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
 import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubySelfSingletonClass, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { classicRailsMajor, detectRailsApplication, initialRubyConfiguration, readRubyConfiguration, type RubyConfiguration } from "./config.js";
+import { grapeMountArguments } from "./grape-mounts.js";
 import { publicSingletonMethods } from "./singleton-methods.js";
 import { RubyTestSuites } from "./spec-registry.js";
 import { DEFAULT_RUBY_MIXIN_RESOLUTION, type DependencyDiagnostic, type DependencyFact, type RubyDependencyFailure, type RubyInventoryFile, type RubyMixinResolution } from "./types.js";
@@ -55,7 +56,7 @@ export interface RubyResolveOptions {
   path?: string;
   line?: number;
   association?: boolean;
-  macroTarget?: "serializer" | "validator";
+  macroTarget?: "serializer" | "validator" | "grape";
   valueRead?: boolean;
   mixin?: boolean;
   mixinOffset?: number;
@@ -287,6 +288,9 @@ export class RubyDependencyResolver {
         result.declarations.push(declaration);
         if (uncertain) this.addDiagnostic({path, code: "unsupported_declaration_scope", line: declaration.line, message: `Relative qualified declaration ${raw} inside another namespace is unsupported`});
         const body = node.childForFieldName("body");
+        if (body && !declaration.conditional && declaration.superclass?.replace(/^::/, "") === "Grape::API") {
+          for (const argument of grapeMountArguments(body)) reference(argument, [name, ...nesting], "route", name);
+        }
         if (body && !declaration.conditional) declaration.singletonMethods = publicSingletonMethods(body);
         if (body && path.startsWith("app/jobs/")) declaration.performsJob = declaresJobEntryPoint(body, declaration.kind);
         if (body && declaration.kind === "class" && !superclass) {
@@ -718,9 +722,16 @@ export class RubyDependencyResolver {
         const candidate = this.inferredReceiver(reference, options);
         if (candidate) return candidate;
       }
+      // A Grape mount supplies endpoint evidence even when the framework
+      // superclass is external. The caller verifies both endpoint classes.
+      if (ancestry === "unknown" && options.macroTarget === "grape" && mixinResolution === "pragmatic"
+        && uninspected?.size && [...uninspected].every(base => base === "Grape::API")) {
+        const candidate = this.exact(reference, options, undefined, locals);
+        if (candidate) return {...candidate, resolution: "inferred"};
+      }
       // Literal serializers still name a Ruby constant. When the sole unknown
       // base is the gem serializer, keep the unique local candidate as inferred.
-      if (ancestry === "unknown" && options.macroTarget && uninspected?.size
+      if (ancestry === "unknown" && (options.macroTarget === "serializer" || options.macroTarget === "validator") && uninspected?.size
         && [...uninspected].every(base => options.macroTarget === "serializer"
           ? base === "ActiveModel::Serializer" : base !== "<dynamic>" && !DEVISE_NAMESPACE.test(base))) {
         const candidate = this.exact(reference, options);
@@ -868,11 +879,29 @@ export class RubyDependencyResolver {
     return endpoint && this.uniqueModelAt(endpoint) && resolve(outerName, ref, reflection.path) === endpoint ? endpoint : null;
   }
 
+  private grapeEndpoint(name: string, path: string): boolean {
+    const declarations = this.declarations.get(name);
+    if (declarations?.length !== 1 || !this.bindings.get(name)?.has(path) || this.blockedPrefix(name)) return false;
+    const endpoint = declarations[0];
+    return endpoint.kind === "class" && !!endpoint.superclass
+      && this.lexicalName(endpoint.superclass, endpoint.nesting) === "Grape::API"
+      && !this.declarations.has("Grape::API") && !this.blockedPrefix("Grape::API");
+  }
+
   getDependencies(path: string): DependencyFact[] {
     const cached = this.dependencyCache.get(path);
     if (cached) return cached;
     const found: DependencyFact[] = this.inferenceBlocked ? [] : this.specRegistry.dependencies(path, this.applicationRootKnown);
     for (const ref of this.facts.get(path)?.references ?? []) {
+      if (ref.kind === "route") {
+        if (!ref.owner || !this.grapeEndpoint(ref.owner, path)) continue;
+        const match = this.lookupConstant(ref.reference, {path, line: ref.line, nesting: ref.nesting, macroTarget: "grape"}, this.mixinResolution);
+        if (!match || match.target === path) continue;
+        const name = this.lexicalName(ref.reference, ref.nesting);
+        if (this.grapeEndpoint(name, match.target)) found.push({...match, kind: "route", type: "routes",
+          reference: "mount " + ref.reference, line: ref.line});
+        continue;
+      }
       if (ref.kind === "validator") {
         // Built-in validation options do not imply a project dependency.
         const name = this.lexicalName(ref.reference, ref.nesting);
