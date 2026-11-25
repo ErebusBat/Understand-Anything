@@ -1,5 +1,5 @@
 import type { TreeSitterPlugin } from "../plugins/tree-sitter-plugin.js";
-import { rubyCall, rubyConstant, rubyLiteral, rubyStatements, type RubyAstNode } from "./ast.js";
+import { rubyCall, rubyConstant, rubyLiteral, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import type { DependencyDiagnostic, DependencyFact } from "./types.js";
 
 interface RouteResolver {
@@ -99,11 +99,50 @@ function httpDestination(call: Call, resource?: string): { controller: string; r
     ? { controller: parts[0], reference: destination } : null;
 }
 
+// Rails applications can mount one local route block at several namespaces.
+// Accept only a direct, zero-argument lambda whose other uses are sibling
+// namespace block arguments. Reassignment or passing it elsewhere is ambiguous.
+function localRouteBlock(node: RubyAstNode, body: RubyAstNode): {name: string; body: RubyAstNode} | null {
+  if (node.type !== "assignment") return null;
+  const left = node.childForFieldName("left");
+  const right = node.childForFieldName("right");
+  const call = rubyCall(right);
+  const block = right?.type === "lambda" && !right.childForFieldName("parameters") ? right.childForFieldName("body")
+    : call?.method === "lambda" && !call.receiver && !call.args.length ? call.block : null;
+  const statements = block?.childForFieldName("body");
+  if (left?.type !== "identifier" || !statements || block?.childForFieldName("parameters")) return null;
+  const allowed = new Set([left.id]);
+  for (const sibling of rubyStatements(body)) {
+    const mount = rubyCall(sibling);
+    const arg = mount?.args.at(-1);
+    const id = arg?.type === "block_argument" && arg.namedChildren[0];
+    if (mount?.method === "namespace" && !mount.receiver && !mount.block
+      && id && id.type === "identifier" && id.text === left.text && sibling.startIndex > node.endIndex) allowed.add(id.id);
+  }
+  if (allowed.size === 1) return null;
+  let safe = true;
+  walkRuby(body, child => {
+    if (child.type === "identifier" && child.text === left.text && !allowed.has(child.id)) safe = false;
+    if (!safe) return false;
+  });
+  return safe ? {name: left.text, body: statements} : null;
+}
+
 function visitRoutes(body: RubyAstNode | null, scope: RouteScope, resolver: RouteResolver,
   record: (site: RouteSite) => void, reject: (node: RubyAstNode, message: string) => void): void {
+  if (!body) return;
+  const blocks = new Map<string, RubyAstNode>();
+  const mounted = new Set<string>();
   for (const node of rubyStatements(body)) {
+    const binding = localRouteBlock(node, body);
+    if (binding) {
+      blocks.set(binding.name, binding.body);
+      continue;
+    }
     const call = rubyCall(node);
-    const nested = call?.block?.childForFieldName("body");
+    const blockArg = call?.method === "namespace" ? call.args.at(-1) : undefined;
+    const shared = blockArg?.type === "block_argument" ? blocks.get(blockArg.namedChildren[0]?.text) : undefined;
+    const nested = call?.block?.childForFieldName("body") ?? shared;
     const condition = node.childForFieldName("condition");
     if ((node.type === "if" || node.type === "unless") && condition
       && /^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*(?:\.[a-z_]\w*\??)+$/.test(condition.text)) {
@@ -116,16 +155,20 @@ function visitRoutes(body: RubyAstNode | null, scope: RouteScope, resolver: Rout
       continue;
     }
     if (call && !call.receiver && !call.block?.childForFieldName("parameters")) {
-      const [first, ...rest] = call.args;
+      const args = shared ? call.args.slice(0, -1) : call.args;
+      const [first, ...rest] = args;
       const name = rubyLiteral(first);
       if (nested && (call.method === "namespace" || call.method === "scope")) {
         const takesPath = typeof name === "string";
-        const options = routeOptions(takesPath ? rest : call.args, ["path", "as", "module"]);
+        const options = routeOptions(takesPath ? rest : args, ["path", "as", "module"]);
         const mod = options?.has("module") ? rubyLiteral(options.get("module")) : call.method === "namespace" ? name : "";
         const url = options?.has("path") ? rubyLiteral(options.get("path")) : name;
         if (options && (takesPath || call.method === "scope") && typeof mod === "string" && (!mod || CONTROLLER_PATH.test(mod))
           && !(typeof url === "string" && /:(?:controller|action)\b/.test(url))) {
-          visitRoutes(nested, {...scope, prefix: scope.prefix + (mod ? mod + "/" : "")}, resolver, record, reject);
+          const prefix = scope.prefix + (mod ? mod + "/" : "");
+          const mount = shared && JSON.stringify([shared.id, prefix]);
+          if (!mount || !mounted.has(mount)) visitRoutes(nested, {...scope, prefix}, resolver, record, reject);
+          if (mount) mounted.add(mount);
           continue;
         }
       } else if (nested && scope.resource && ["member", "collection", "new"].includes(call.method) && !call.args.length) {

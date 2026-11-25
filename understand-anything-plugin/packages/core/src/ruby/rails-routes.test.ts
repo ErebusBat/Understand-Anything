@@ -106,6 +106,23 @@ describe("restricted Rails routes", () => {
     expect(result.diagnostics).toHaveLength(3);
   });
 
+  it("expands a local route lambda at its namespace mounts, once per controller prefix", () => {
+    const result = extract(`Rails.application.routes.draw do
+      if SiteOptions.routes.preview
+        common = lambda { get '/people', to: 'people#index' }
+        namespace :admin, &common
+        namespace :preview, path: '/', module: :admin, &common
+      end
+      reassigned = lambda { root 'people#index' }
+      reassigned = from_plugin
+      namespace :admin, &reassigned
+    end`);
+    expect(result.dependencies).toEqual([expect.objectContaining({
+      target: "app/controllers/admin/people_controller.rb", reference: "people#index if SiteOptions.routes.preview", line: 3,
+    })]);
+    expect(result.diagnostics.map(d => d.line)).toEqual([7, 8, 9]);
+  });
+
   it("preserves the controller module when a literal namespace changes its URL prefix", () => {
     const result = extract(`Rails.application.routes.draw do
       namespace :admin, path: "staff" do
