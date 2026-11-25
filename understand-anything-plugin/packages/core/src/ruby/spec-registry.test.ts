@@ -127,6 +127,20 @@ describe("legacy FactoryGirl suites", () => {
     }
     expect(index({...suite, "test/factories/extra.rb": "FactoryGirl.define { factory :card }"}).map(f => f.target)).toEqual([modern]);
   });
+
+  it("excludes only names that can collide with a literal prefix and suffix around interpolation", () => {
+    const source = `FactoryGirl.define do
+      factory :supplier
+      factory :online_card
+      factory :online_supplier
+      names.each { |name| factory :"online_#{name}_card" }
+      factory :online_gold_card
+    end`;
+    const uses = "FactoryGirl.create :supplier\nFactoryGirl.create :online_card\nFactoryGirl.create :online_supplier\nFactoryGirl.create :online_gold_card";
+    expect(index({[factory]: source, [spec]: uses}).map(f => f.line)).toEqual([1, 2, 3]);
+    expect(index({[factory]: source.replace('online_#{name}_card', '#{name}'), [spec]: uses})).toEqual([]);
+    expect(index({[factory]: source.replace('_card" }', '_card", aliases: names }'), [spec]: uses})).toEqual([]);
+  });
 });
 
 it.each(["FactoryBot = LocalRegistry", "class ::FactoryBot; end"])(

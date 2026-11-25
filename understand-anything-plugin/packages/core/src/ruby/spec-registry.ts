@@ -33,6 +33,18 @@ function factoryReceiver(node: RubyAstNode | null): FactoryRegistry | undefined 
   return factoryRegistries.find(registry => registry === name);
 }
 
+type FactoryNameBounds = {prefix: string; suffix: string};
+
+/** Interpolation can supply any value, but cannot replace literal text
+ * outside it. Unknown escapes and other expressions can match any name. */
+function factoryNameBounds(node: RubyAstNode | undefined): FactoryNameBounds {
+  const parts = node?.namedChildren ?? [];
+  if (!node || !["string", "delimited_symbol"].includes(node.type)
+    || !parts.some(part => part.type === "interpolation")) return {prefix: "", suffix: ""};
+  const literal = (part: RubyAstNode) => part.type === "string_content" && /^\w+$/.test(part.text) ? part.text : "";
+  return {prefix: literal(parts[0]), suffix: literal(parts[parts.length - 1])};
+}
+
 function topLevelBinding(node: RubyAstNode): boolean {
   for (let owner = node.parent; owner; owner = owner.parent) {
     if (["class", "module", "method", "singleton_class", "singleton_method"].includes(owner.type)) return false;
@@ -67,7 +79,7 @@ export class RubySpecRegistry {
   private readonly uses = new Map<string, Site[]>();
   private readonly replacedRegistries = new Set<string>();
   private readonly localReplacements = new Map<string, Set<string>>();
-  private readonly incomplete = new Set<FactoryRegistry>();
+  private readonly unknownNames: Record<FactoryRegistry, FactoryNameBounds[]> = {FactoryBot: [], FactoryGirl: []};
 
   readDefaultOptions(content: string): void {
     this.factorySyntax.readDefaultOptions(content);
@@ -106,18 +118,18 @@ export class RubySpecRegistry {
         const registries = definition ? [definition] : factoryRegistries;
         const name = rubyLiteral(args[0]);
         const names = typeof name === "string" ? [name] : [];
-        let complete = typeof name === "string";
+        let unknown = typeof name === "string" ? null : factoryNameBounds(args[0]);
         for (const opt of args.slice(1).flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])) {
-          if (opt.type !== "pair") { complete = false; continue; }
+          if (opt.type !== "pair") { unknown = {prefix: "", suffix: ""}; continue; }
           if (rubyLiteral(opt.childForFieldName("key")) !== "aliases") continue;
           const aliases = rubyLiteral(opt.childForFieldName("value"));
-          if (!Array.isArray(aliases)) { complete = false; continue; }
+          if (!Array.isArray(aliases)) { unknown = {prefix: "", suffix: ""}; continue; }
           for (const alias of aliases) {
             if (typeof alias === "string") names.push(alias);
           }
         }
         for (const registry of registries) {
-          if (!complete) this.incomplete.add(registry);
+          if (unknown) this.unknownNames[registry].push(unknown);
           for (const key of names) register(this.factories[registry], key, provider);
         }
         return;
@@ -154,7 +166,8 @@ export class RubySpecRegistry {
     for (const site of this.uses.get(path) ?? []) {
       const registry = site.registry;
       if (this.replacedRegistries.has(registry) || this.localReplacements.get(path)?.has(registry)
-        || registry !== "RSpec" && this.incomplete.has(registry)) continue;
+        || registry !== "RSpec" && this.unknownNames[registry].some(({prefix, suffix}) =>
+          site.key.startsWith(prefix) && site.key.endsWith(suffix) && site.key.length >= prefix.length + suffix.length)) continue;
       if (site.bareBuilder && (this.replacedRegistries.has("RSpec") || this.localReplacements.get(path)?.has("RSpec")
         || !this.factorySyntax.available(path, site.bareBuilder, hasRailsRoot))) continue;
       const target = (registry === "RSpec" ? this.shared : this.factories[registry]).get(site.key);
