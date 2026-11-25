@@ -4,9 +4,10 @@ Rails dependency extraction runs as part of `extract-import-map.mjs`. It parses 
 
 Explicit `require` and `require_relative` relationships remain in `importMap`. The additional scan fields are:
 
-- `dependencyMap`: source file paths mapped to facts with `target`, `type`, `kind`, optional `reference`, and optional source `line`.
+- `dependencyMap`: source file paths mapped to facts with `target`, `type`, `kind`, optional `reference`, and optional source `line`. A mixin resolved by the pragmatic fallback also carries `resolution: "inferred"`.
 - `dependencyDiagnostics`: unsupported or ambiguous cases, with a code, message, source path, optional line, and optional `candidateTarget` file for a qualified mixin. Read and parse failures remain in `failures`.
 - `dependencyResolverVersion`: the persisted version of the dependency resolver.
+- `rubyMixinResolution`: the effective project mode, either `pragmatic` (default) or `strict`.
 
 Constants, associations and literal template renders produce `depends_on`, superclasses produce `inherits`, and supported routes produce `routes`. `include` and `extend` keep their distinct evidence while both use `depends_on`. All endpoints are files: a model's `find` call or a route action name does not create a method node.
 
@@ -26,7 +27,9 @@ Static configuration support includes literal root additions through `<<` and `+
 
 Constant lookup preserves actual Ruby lexical nesting, compact namespaces, and leading `::`. Ambiguous roots, conflicting declarations, and unsupported shadowing remain unresolved rather than choosing a basename match.
 
-An external ancestor can define the first name in a qualified `include` or `extend`. If its top-level spelling identifies one local module and the resolver finds no known shadow, the `unsupported_ancestor_lookup` diagnostic includes that file as `candidateTarget`. The diagnostic retains the source line for inspection. Confirmed mixins enter the dependency graph.
+The default `pragmatic` mode handles literal, qualified mixins such as `include Concerns::Auditable`. The resolver first checks the enclosing namespaces and inspectable ancestors. If an external ancestor is unknown, the top-level spelling identifies one local module, and there is no evidence of shadowing, the resolver emits a file dependency with `resolution: "inferred"`. Graph search and explain show `inferred include` or `inferred extend` and the source line. An explicit root-qualified reference such as `::Concerns::Auditable` uses top-level lookup directly.
+
+Uninspected Devise ancestors and dynamic ancestry keep the qualified mixin in diagnostics when lookup is uncertain. In `strict` mode, all such uncertain mixins stay in diagnostics. A unique local candidate appears as `candidateTarget`. To switch modes, run `/understand --ruby-mixin-resolution strict` or `/understand --ruby-mixin-resolution pragmatic`. The command saves the preference in the project's analysis configuration.
 
 A literal, top-level `require_relative` can also establish where a subsequent `include` or `extend` gets its module. The required file must be in the selected inventory and declare the named top-level module unconditionally. This evidence applies to the consumer that loads it, including when the provider's filename differs from its Rails autoload name.
 
@@ -42,7 +45,7 @@ Ruby test pairing recognizes exact Minitest/RSpec unit-test paths, including `*_
 
 ## Incremental updates
 
-Ruby source changes conservatively refresh Ruby dependency facts, including consumers whose source did not change. Inventory changes, resolver version migration, and missing dependency baselines also trigger refresh. Empty refreshed fact lists replace old lists, and merge removes prior deterministic edges before recovering the current facts. Existing unrelated semantic relationships are preserved.
+Ruby source changes conservatively refresh Ruby dependency facts, including consumers whose source did not change. Inventory changes, resolver version migration, changing `rubyMixinResolution`, and missing dependency baselines also trigger refresh. A mode change at an unchanged Git commit updates the graph without reanalyzing source files. Empty refreshed fact lists replace old lists, and merge removes prior deterministic edges before recovering the current facts. Existing unrelated semantic relationships are preserved.
 
 On the first incremental run with concern-hook extraction, the scanner identifies Ruby files that may contain hook methods. Preparation compares their new function counts with the saved fingerprints even when the source bytes match. Files that gain methods or lack structural fingerprints enter reanalysis. The following run can reuse the updated baseline.
 
