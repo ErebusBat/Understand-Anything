@@ -48,7 +48,7 @@ function* indentedExpressions(path: string, source: string): Generator<Expressio
   }
 }
 
-function qualifiedPartial(node: RubyAstNode): string | null {
+function literalPartial(node: RubyAstNode): string | null {
   const call = rubyCall(node);
   if (call?.method !== "render" || call.receiver || call.block) return null;
   const [first, ...rest] = call.args;
@@ -72,8 +72,7 @@ function qualifiedPartial(node: RubyAstNode): string | null {
       }
     }
   }
-  // Names without a directory use the rendering controller's lookup prefixes.
-  return typeof name === "string" && /^(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_-]+$/.test(name) ? name : null;
+  return typeof name === "string" && /^(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+$/.test(name) ? name : null;
 }
 
 /** Read standalone Ruby output expressions; markup, strings and dynamic
@@ -85,7 +84,7 @@ export function* templatePartials(plugin: TreeSitterPlugin, path: string, source
     try {
       name = plugin.withSyntaxTree("template.rb", code, root => {
         const statements = rubyStatements(root);
-        return statements.length === 1 ? qualifiedPartial(statements[0]) : null;
+        return statements.length === 1 ? literalPartial(statements[0]) : null;
       });
     } catch {
       // Multi-statement template control flow and handler-specific syntax

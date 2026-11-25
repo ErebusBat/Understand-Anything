@@ -243,16 +243,7 @@ export class RailsViewResolver {
     return result;
   }
 
-  dependencies(path: string): DependencyFact[] {
-    const source = this.viewSources.get(path);
-    if (source !== undefined) {
-      const facts = new Map<string, DependencyFact>();
-      for (const {name, line} of templatePartials(this.plugin, path, source)) {
-        const target = this.templates.get(partialKey(name));
-        if (target && target !== path) facts.set(line + ":" + name, {type: "depends_on", kind: "render", target, reference: name, line});
-      }
-      return [...facts.values()];
-    }
+  private controllerDependencies(path: string): DependencyFact[] {
     if (!this.templates.size || !CONTROLLER.test(path)) return [];
     const controller = this.controller(path);
     if (!controller?.facts.length) return [];
@@ -268,5 +259,32 @@ export class RailsViewResolver {
       parent = ancestor.parent;
     }
     return overridesDefaultRender ? controller.facts.filter(fact => !fact.resolution) : controller.facts;
+  }
+
+  private renderingControllerPrefix(path: string): string | null {
+    const view = /^app\/views\/((?:[a-z0-9_]+\/)*[a-z0-9_]+)\/([a-z0-9][\w-]*)\.(?:html\.)?(?:erb|haml|slim)$/.exec(path);
+    if (!view) return null;
+    const prefix = view[1];
+    // An explicit render or a default action establishes one possible host
+    // with this directory first in its lookup prefixes. Shared partials and
+    // layouts do not establish the caller of an unqualified partial.
+    const host = this.controllerDependencies("app/controllers/" + prefix + "_controller.rb");
+    return host.some(fact => fact.kind === "render" && fact.target === path) ? prefix : null;
+  }
+
+  dependencies(path: string): DependencyFact[] {
+    const source = this.viewSources.get(path);
+    if (source === undefined) return this.controllerDependencies(path);
+    const facts = new Map<string, DependencyFact>();
+    let prefix: string | null | undefined;
+    for (const {name, line} of templatePartials(this.plugin, path, source)) {
+      const relative = !name.includes("/");
+      if (relative && prefix === undefined) prefix = this.renderingControllerPrefix(path);
+      if (relative && !prefix) continue;
+      const target = this.templates.get(partialKey(relative ? prefix + "/" + name : name));
+      if (target && target !== path) facts.set(line + ":" + name, {type: "depends_on", kind: "render", target, reference: name, line,
+        ...(relative ? {resolution: "inferred"} : {})});
+    }
+    return [...facts.values()];
   }
 }
