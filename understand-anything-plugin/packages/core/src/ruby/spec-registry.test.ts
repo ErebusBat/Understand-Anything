@@ -61,3 +61,51 @@ describe("RSpec shared registrations", () => {
     })).toEqual([]);
   });
 });
+
+describe("FactoryBot registrations", () => {
+  it("resolves explicit builders to literal factories, nested factories, and aliases", () => {
+    const factory = "spec/factories/records.rb";
+    const result = index({
+      [factory]: `FactoryBot.define do
+        factory :item, aliases: [:product] do
+          factory :archived_item
+        end
+      end`,
+      [spec]: `RSpec.describe Item do
+        let(:first) { FactoryBot.build :item }
+        let(:second) { ::FactoryBot.create_list(:archived_item, 2) }
+        let(:third) { FactoryBot.attributes_for('product') }
+      end`,
+    });
+    expect(result.map(f => [f.kind, f.line, f.target, f.resolution])).toEqual([
+      ["factory", 2, factory, "inferred"], ["factory", 3, factory, "inferred"], ["factory", 4, factory, "inferred"],
+    ]);
+  });
+
+  it("rejects ambiguous names, unrelated builders, dynamic names, and nonregistry declarations", () => {
+    expect(index({
+      "spec/factories/one.rb": "FactoryBot.define { factory :one, aliases: [:duplicate] }",
+      "spec/factories/two.rb": "FactoryBot.define { factory :duplicate }\nfactory :orphan\nFake.define { factory :fake }",
+      [spec]: `describe Item do
+        it do
+          FactoryBot.create(:duplicate)
+          Fake.create(:one)
+          create(:one)
+          FactoryBot.build(active_name)
+          FactoryBot.build(:orphan)
+          FactoryBot.build(:fake)
+        end
+      end`,
+    })).toEqual([]);
+  });
+});
+
+it.each(["FactoryBot = LocalRegistry", "module Example; class FactoryBot; end; end"])(
+  "suppresses registry inference when %s may shadow the receiver", declaration => {
+    expect(index({
+      "spec/support/replacement.rb": declaration,
+      "spec/factories/item.rb": "FactoryBot.define { factory :item }",
+      [spec]: "describe Item do; it { FactoryBot.create :item }; end",
+    })).toEqual([]);
+  },
+);
