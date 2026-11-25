@@ -179,15 +179,19 @@ function visitRoutes(body: RubyAstNode | null, scope: RouteScope, resolver: Rout
         if (typeof name === "string" && /^[a-z][a-z\d_]*$/.test(name) && options && !(options.has("only") && options.has("except"))) {
           const controller = options.has("controller") ? rubyLiteral(options.get("controller"))
             : call.method === "resource" ? resolver.pluralize(name) : name;
-          if (typeof controller === "string" && CONTROLLER_PATH.test(controller)) {
-            const only = options.get("only"), except = options.get("except");
-            const actions = REST_ACTIONS.filter(action => action !== "index" || call.method === "resources");
-            if (actions.some(action => (!only || actionList(only)!.includes(action)) && (!except || !actionList(except)!.includes(action)))) {
-              record({node, controller: scope.prefix + controller, reference: call.method + " :" + name, guards: scope.guards});
-            }
-            if (nested) visitRoutes(nested, {...scope, resource: controller}, resolver, record, reject);
-            continue;
+          const known = typeof controller === "string" && CONTROLLER_PATH.test(controller) ? controller : undefined;
+          const only = options.get("only"), except = options.get("except");
+          const included = only && actionList(only)!;
+          const excluded = except && actionList(except)!;
+          const actions = REST_ACTIONS.filter(action => action !== "index" || call.method === "resources");
+          if (actions.some(action => (!included || included.includes(action)) && !excluded?.includes(action))) {
+            if (known) record({node, controller: scope.prefix + known, reference: call.method + " :" + name, guards: scope.guards});
+            else reject(node, "Resource controller could not be determined statically.");
           }
+          // An explicit child destination keeps its own controller even when
+          // the singular resource's pluralization is unknown.
+          if (nested) visitRoutes(nested, {...scope, resource: known}, resolver, record, reject);
+          continue;
         }
       } else if (!call.block && (HTTP_METHODS.has(call.method) || call.method === "root" || call.method === "match")) {
         const destination = httpDestination(call, scope.resource);

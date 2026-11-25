@@ -123,6 +123,15 @@ describe("restricted Rails routes", () => {
     expect(result.diagnostics.map(d => d.line)).toEqual([7, 8, 9]);
   });
 
+  it("follows explicit child destinations when the resource controller is unknown", () => {
+    const result = extract(`Rails.application.routes.draw do
+      resource :unknown, only: [] do
+        delete '/:id' => 'people#destroy'
+      end
+    end`);
+    expect(result.dependencies).toEqual([expect.objectContaining({target: "app/controllers/people_controller.rb", line: 3})]);
+  });
+
   it("preserves the controller module when a literal namespace changes its URL prefix", () => {
     const result = extract(`Rails.application.routes.draw do
       namespace :admin, path: "staff" do
