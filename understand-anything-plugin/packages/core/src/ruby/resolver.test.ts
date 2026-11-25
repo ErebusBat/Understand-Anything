@@ -434,7 +434,7 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.resolveConstant("Settings::FEATURE")).toBeNull();
   });
 
-  it("resolves literal values defined in loaded Rails initializers", () => {
+  it("resolves the file that assigns values in loaded Rails initializers", () => {
     const {resolver} = setup({
       "config/initializers/gateway.rb": "module Gateway; PLACEHOLDER = 'proxy'.freeze; TOKEN = ENV['TOKEN']; end",
       "config/initializers/default.rb": "DEFAULT_PORT = 80",
@@ -444,7 +444,22 @@ describe("bounded Rails dependency resolver", () => {
     expect(resolver.getDependencies("probe.rb").map(f => [f.reference, f.target])).toEqual([
       ["DEFAULT_PORT", "config/initializers/default.rb"],
       ["Gateway::PLACEHOLDER", "config/initializers/gateway.rb"],
+      ["Gateway::TOKEN", "config/initializers/gateway.rb"],
     ]);
+  });
+
+  it("locates unique schema and type assignments without evaluating their builders", () => {
+    const {resolver} = setup({
+      "app/graphql/graph/schema.rb": "module Graph; Schema = GraphQL::Schema.define { query Types::Root }; end",
+      "app/graphql/graph/types/root.rb": "module Graph; Types::Root = GraphQL::ObjectType.define {}; end",
+      "app/graphql/graph/other.rb": "module Graph; Wrong::Name = build; end",
+      "app/graphql/graph/conflict.rb": "module Graph; Conflict = build; end",
+      "config/initializers/conflict.rb": "module Graph; Conflict = replacement; end",
+      "probe.rb": "Graph::Schema.execute; Graph::Types::Root; Graph::Wrong::Name; Graph::Conflict; Graph::Schema::Child",
+    });
+    expect(targets(resolver, "probe.rb")).toEqual(["app/graphql/graph/schema.rb", "app/graphql/graph/types/root.rb"]);
+    expect(targets(resolver, "app/graphql/graph/schema.rb")).toEqual(["app/graphql/graph/types/root.rb"]);
+    expect(resolver.resolveConstant("Graph::Schema")).toBeNull();
   });
 
   it("extracts constant reads from initializers without turning assigned aliases into autoload targets", () => {

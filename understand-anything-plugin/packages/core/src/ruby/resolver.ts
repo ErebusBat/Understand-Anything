@@ -16,7 +16,7 @@ interface Declaration {
   mixins: string[];
   conditional: boolean;
   wrapsDeclarations?: boolean;
-  literalValue?: boolean;
+  valueAssignment?: "name" | "qualified";
 }
 interface Reference {
   reference: string;
@@ -60,12 +60,6 @@ const DEVISE_NAMESPACE = /^Devise(?:::|$)/;
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 
-function assignsLiteral(node: RubyAstNode | null): boolean {
-  const call = rubyCall(node);
-  const value = call?.method === "freeze" && !call.block && !call.args.length ? call.receiver : node;
-  return !!value && (["array", "hash", "float", "regex"].includes(value.type) || rubyLiteral(value) !== undefined);
-}
-
 /** Paths are inventory-relative; both spelling and resolved symlinks must remain
  * inside the selected checkout. This function reads no target source. */
 export function safeRubySourcePath(projectRoot: string, path: string): string {
@@ -90,7 +84,7 @@ export class RubyDependencyResolver {
   readonly configuration: RubyConfiguration;
   private readonly facts = new Map<string, RubyFileFacts>();
   private readonly bindings = new Map<string, Set<string>>();
-  private readonly literalBindings = new Map<string, string>();
+  private readonly valueBindings = new Map<string, string>();
   private readonly declarations = new Map<string, Declaration[]>();
   private readonly consumerDeclarations = new Map<string, Map<string, Declaration[]>>();
   private readonly namespaces = new Set<string>();
@@ -265,7 +259,8 @@ export class RubyDependencyResolver {
           result.declarations.push({
             name, kind: "assignment", path, line: node.startPosition.row + 1, nesting: [...nesting], mixins: [],
             conditional: conditional || inMethod,
-            literalValue: node.type === "assignment" && !raw.includes("::") && assignsLiteral(value),
+            valueAssignment: node.type === "assignment" && value && !rubyConstant(value)
+              ? (raw.includes("::") ? "qualified" : "name") : undefined,
           });
           if (value) visit(value, nesting, owner, inMethod, conditional);
           return;
@@ -339,7 +334,7 @@ export class RubyDependencyResolver {
     const roots = [...new Map(this.configuration.roots.map(r => [r.path, r])).values()].sort((a,b) => b.path.length - a.path.length || compare(a.path,b.path));
     const expectedOwners = new Map<string, string[]>();
     const classWrappers = new Set<Declaration>();
-    const literalCandidates = new Set<Declaration>();
+    const valueCandidates = new Set<Declaration>();
     for (const [path, facts] of this.facts) {
       const matchingRoots = roots.filter(r => path.startsWith(r.path + "/"));
       const ignored = this.configuration.ignored.some(p => path === p || path.startsWith(p + "/") || path === p + ".rb");
@@ -363,7 +358,7 @@ export class RubyDependencyResolver {
         .map(root => this.configuration.inflections.camelize(path.slice(root.path.length + 1, -3), true))
         .filter(name => name !== null))];
       for (const name of expected) expectedOwners.set(name, [...(expectedOwners.get(name) ?? []), path]);
-      const corroborated = expected.filter(name => facts.declarations.some(d => d.name === name && d.kind !== "assignment" && !d.conditional));
+      const corroborated = expected.filter(name => facts.declarations.some(d => d.name === name && (d.kind !== "assignment" || d.valueAssignment) && !d.conditional));
       if (matchingRoots.length && !corroborated.length) this.addDiagnostic({
         path, code: "unsupported_constant_mapping",
         message: `Autoload path expects ${expected.join(" or ") || "an unsupported constant name"}; no matching unconditional declaration`,
@@ -377,8 +372,10 @@ export class RubyDependencyResolver {
         if (wrapper && declaration.kind === "module" && !declaration.conditional) continue;
         if (wrapper && declaration.wrapsDeclarations) classWrappers.add(declaration);
         const nested = corroborated.some(name => declaration.name.startsWith(name + "::"));
-        if (declaration.literalValue && !declaration.conditional && (initializer || nested)) {
-          literalCandidates.add(declaration);
+        // A namespace-qualified assignment must also match the file's autoload spelling.
+        if (!declaration.conditional && declaration.valueAssignment
+          && (direct || (declaration.valueAssignment === "name" && (initializer || nested)))) {
+          valueCandidates.add(declaration);
         }
         const list = this.declarations.get(declaration.name) ?? [];
         list.push(declaration);
@@ -406,9 +403,11 @@ export class RubyDependencyResolver {
     }
     for (const [name, definitions] of this.declarations) {
       const definition = definitions[0];
-      if (definitions.length === 1 && literalCandidates.has(definition) && !expectedOwners.has(name)) {
-        this.literalBindings.set(name, definition.path);
-        this.blocked.add(name); // A literal cannot supply a class, module or child namespace.
+      const owners = expectedOwners.get(name);
+      if (definitions.length === 1 && valueCandidates.has(definition)
+        && (!owners || (owners.length === 1 && owners[0] === definition.path))) {
+        this.valueBindings.set(name, definition.path);
+        this.blocked.add(name); // The assignment identifies the file, independently of its runtime value or type.
         continue;
       }
       // A child file can open its parent class just to declare the nested
@@ -496,9 +495,9 @@ export class RubyDependencyResolver {
         prefix = prefix.slice(0, separator);
       }
     }
-    if (options.valueRead && this.literalBindings.has(name)) {
+    if (options.valueRead && this.valueBindings.has(name)) {
       const separator = name.lastIndexOf("::");
-      if (separator < 0 || !this.blockedPrefix(name.slice(0, separator))) return {target: this.literalBindings.get(name)!};
+      if (separator < 0 || !this.blockedPrefix(name.slice(0, separator))) return {target: this.valueBindings.get(name)!};
     }
     if (this.blockedPrefix(name)) {
       this.addDiagnostic({path: options.path ?? null, code: "ambiguous_constant_reference", message: `Constant ${name} has shadowing or multiple-definition evidence`, ...(options.line ? {line:options.line} : {})});
