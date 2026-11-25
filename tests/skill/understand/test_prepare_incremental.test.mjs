@@ -99,7 +99,7 @@ function buildBaseline(root, baseCommit) {
     'utf-8',
   );
   run(process.execPath, [importScript, importInput, importOutput], root);
-  const { importMap, dependencyMap, dependencyDiagnostics, dependencyResolverVersion }
+  const { importMap, dependencyMap, dependencyDiagnostics, dependencyResolverVersion, rubyMixinResolution }
     = JSON.parse(readFileSync(importOutput, 'utf-8'));
   const scan = {
     name: 'fixture',
@@ -115,6 +115,7 @@ function buildBaseline(root, baseCommit) {
     dependencyMap,
     dependencyDiagnostics,
     dependencyResolverVersion,
+    rubyMixinResolution,
   };
   writeFileSync(join(intermediate, 'scan-result.json'), JSON.stringify(scan), 'utf-8');
 
@@ -257,6 +258,7 @@ describe('typed dependency incremental contracts', () => {
   const baseline = () => ({
     files,
     dependencyResolverVersion: 6,
+    rubyMixinResolution: 'pragmatic',
     dependencyMap: { 'app/models/person.rb': [], 'app/services/report.rb': [fact], 'src/extra.js': [] },
   });
 
@@ -350,10 +352,14 @@ describe('typed dependency incremental contracts', () => {
       { source: target, target: source, type: 'depends_on', recoveredFromDependencyMap: true },
     ];
     const marked = { source, target: 'file:src/extra.js', type: 'routes', recoveredFromDependencyMap: true };
-    const graph = { nodes, edges: [...stale, ...unrelated, marked] };
+    // Validated graphs retain the inferred site even when the raw recovery flag
+    // and the source's prior scan entry are absent.
+    const inferred = { source, target: 'file:src/extra.js', type: 'depends_on',
+      dependencyEvidence: [{kind: 'include', resolution: 'inferred'}] };
+    const graph = { nodes, edges: [...stale, ...unrelated, marked, inferred] };
     expect(pruneExistingGraph(graph, new Set(), new Set(), new Set(['app/services/report.rb']),
       { 'app/services/report.rb': priorFacts }).edges).toEqual(unrelated);
-    expect(graph.edges).toHaveLength(8);
+    expect(graph.edges).toHaveLength(9);
   });
 });
 
@@ -521,7 +527,7 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     const f = railsFixture({
       Gemfile: "gem 'rails', '~> 4.2.10'\n",
       [model]: 'class Item; include Concerns::Item::Searchable; end',
-      [ambiguousModel]: 'class Record < ExternalBase; include Concerns::Item::Searchable; end',
+      [ambiguousModel]: 'class Record < Devise::SessionsController; include Concerns::Item::Searchable; end',
       [concern]: 'module Concerns::Item::Searchable; end',
     });
     const pair = { source: `file:${model}`, target: `file:${concern}`, type: 'depends_on' };
@@ -552,9 +558,6 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     expect(readGraph().edges).toContainEqual(expect.objectContaining(pair));
     expect(readGraph().edges).not.toContainEqual(expect.objectContaining({...pair, source: `file:${ambiguousModel}`}));
 
-    // Begin a new update from the published graph, after the retry snapshot
-    // for the completed upgrade has been cleaned away.
-    unlinkSync(join(f.intermediate, 'incremental-baseline.json'));
     writeProjectFile(f.root, 'Gemfile', "gem 'rails', '~> 7.1.0'\n");
     commit(f.root, 'change Rails version');
     const modern = prepare(f.root, f.baseCommit);
@@ -568,6 +571,53 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     run(python, [mergeScript, f.root], f.root);
     run(process.execPath, [finalizeScript, f.root], f.root);
     expect(readGraph().edges).not.toContainEqual(expect.objectContaining(pair));
+  });
+
+  it('publishes inferred mixins on upgrade and removes them when switching to strict at the same commit', () => {
+    const source = 'app/models/item.rb';
+    const concern = 'app/models/concerns/item/searchable.rb';
+    const reference = 'Concerns::Item::Searchable';
+    const f = railsFixture({
+      '.ua/config.json': JSON.stringify({rubyMixinResolution: 'strict'}),
+      Gemfile: "gem 'rails', '~> 4.2.10'",
+      [source]: `class Item < ExternalBase; include ${reference}; end`,
+      [concern]: `module ${reference}; end`,
+    });
+    const configPath = join(f.root, '.ua', 'config.json');
+    const baseline = f.read('scan-result.json');
+    expect(baseline.dependencyMap[source]).toEqual([]);
+    baseline.dependencyResolverVersion = 5;
+    delete baseline.rubyMixinResolution;
+    f.write('scan-result.json', baseline);
+    unlinkSync(configPath);
+
+    const publish = () => {
+      run(python, [mergeScript, f.root], f.root);
+      run(process.execPath, [finalizeScript, f.root], f.root);
+      return JSON.parse(readFileSync(join(f.root, '.ua', 'knowledge-graph.json'), 'utf8')).edges;
+    };
+    const pair = {source: `file:${source}`, target: `file:${concern}`, type: 'depends_on'};
+    const site = {kind: 'include', line: 1, reference, resolution: 'inferred'};
+    const upgraded = prepare(f.root, f.baseCommit);
+    expect(upgraded.plan).toMatchObject({action: 'PARTIAL_UPDATE', filesToReanalyze: [], rubyMixinResolution: 'pragmatic'});
+    expect(upgraded.scan.dependencyMap[source]).toEqual([{target: concern, type: 'depends_on', ...site}]);
+    expect(prepare(f.root, f.baseCommit).scan).toEqual(upgraded.scan);
+    expect(publish()).toContainEqual(expect.objectContaining({...pair, dependencyEvidence: [site]}));
+    expect(prepare(f.root, f.baseCommit).plan.action).toBe('SKIP');
+
+    writeFileSync(configPath, JSON.stringify({rubyMixinResolution: 'strict'}));
+    const strict = prepare(f.root, f.baseCommit);
+    expect(strict.plan).toMatchObject({action: 'PARTIAL_UPDATE', filesToReanalyze: [],
+      rubyMixinResolutionChanged: true, dependencyResolverVersionChanged: false});
+    expect(strict.scan.rubyMixinResolution).toBe('strict');
+    expect(strict.scan.dependencyDiagnostics).toContainEqual(expect.objectContaining({path: source, candidateTarget: concern}));
+    expect(strict.scan.dependencyMap[source]).toEqual([]);
+    expect(publish()).not.toContainEqual(expect.objectContaining(pair));
+    expect(prepare(f.root, f.baseCommit).plan.action).toBe('SKIP');
+
+    unlinkSync(configPath);
+    expect(prepare(f.root, f.baseCommit).scan.dependencyMap[source]).toEqual(upgraded.scan.dependencyMap[source]);
+    expect(publish()).toContainEqual(expect.objectContaining({...pair, dependencyEvidence: [site]}));
   });
 
   it('reanalyzes unchanged files with newly extractable concern hook methods on a legacy baseline', () => {

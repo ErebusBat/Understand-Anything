@@ -57,7 +57,9 @@ const {
   compareFingerprints,
   classifyUpdate,
   createIgnoreFilter,
+  loadRubyMixinResolution,
   resolveUaDir,
+  DEFAULT_RUBY_MIXIN_RESOLUTION,
   RUBY_DEPENDENCY_RESOLVER_VERSION,
 } = core;
 
@@ -108,7 +110,13 @@ function isRubyPath(path) {
   return /\.(?:rb|rake)$/.test(path) || /(?:^|\/)(?:Gemfile|Rakefile)$/.test(path);
 }
 
-function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths, inventoryChanged, forceRefresh = false }) {
+function hasRecoveredDependency(edge) {
+  return edge.recoveredFromDependencyMap === true
+    || (Array.isArray(edge.dependencyEvidence) && edge.dependencyEvidence.some(site => site?.resolution === 'inferred'));
+}
+
+function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths, inventoryChanged,
+  rubyMixinResolution = DEFAULT_RUBY_MIXIN_RESOLUTION, forceRefresh = false }) {
   const rubyPaths = currentScan.files
     .filter(file => file.language === 'ruby' || isRubyPath(file.path))
     .map(file => file.path);
@@ -117,7 +125,7 @@ function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths
     .filter(([, facts]) => Array.isArray(facts) && facts.length > 0)
     .map(([path]) => path);
   const recoveredSourceIds = new Set((graph?.edges ?? [])
-    .filter(edge => DEPENDENCY_TYPES.has(edge.type) && edge.recoveredFromDependencyMap === true)
+    .filter(edge => DEPENDENCY_TYPES.has(edge.type) && hasRecoveredDependency(edge))
     .map(edge => edge.source));
   previousFactSources.push(...(graph?.nodes ?? [])
     .filter(node => recoveredSourceIds.has(node.id) && WHOLE_FILE_TYPES.has(node.type))
@@ -125,14 +133,15 @@ function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths
   const candidates = sorted([...rubyPaths, ...previousFactSources].filter(path => currentPaths.has(path)));
   const candidatePaths = new Set(candidates);
   const versionChanged = previousScan?.dependencyResolverVersion !== RUBY_DEPENDENCY_RESOLVER_VERSION;
+  const modeChanged = previousScan?.rubyMixinResolution !== rubyMixinResolution;
   const missingEntries = rubyPaths.some(path => !Array.isArray(previousScan?.dependencyMap?.[path]));
   // A declaration, association, root, or inflection can change resolution in
   // an unchanged consumer. Fingerprint STRUCTURAL/COSMETIC is not sufficient.
   const contextChanged = inventoryChanged || changedPaths.some(isRubyPath)
     || changedPaths.some(path => candidatePaths.has(path));
   return {
-    versionChanged,
-    paths: forceRefresh || versionChanged || missingEntries || contextChanged ? candidates : [],
+    versionChanged, modeChanged,
+    paths: forceRefresh || versionChanged || modeChanged || missingEntries || contextChanged ? candidates : [],
   };
 }
 
@@ -454,6 +463,7 @@ function refreshDependencyData({ previousScan, currentScan, extraction, refreshP
       if (!target || target === path || !currentPaths.has(target)
         || !DEPENDENCY_TYPES.has(fact.type) || typeof fact.kind !== 'string') continue;
       const normalized = { target, type: fact.type, kind: fact.kind };
+      if (fact.resolution === 'inferred') normalized.resolution = 'inferred';
       if (typeof fact.reference === 'string') normalized.reference = fact.reference;
       if (Number.isInteger(fact.line) && fact.line > 0) normalized.line = fact.line;
       facts.set(JSON.stringify(normalized), normalized);
@@ -492,7 +502,7 @@ function refreshDependencyData({ previousScan, currentScan, extraction, refreshP
   };
 }
 
-function refreshResolutionMaps({ projectRoot, intermediateDir, previousScan, currentScan, importAnalysisPaths, dependencyAnalysisPaths }) {
+function refreshResolutionMaps({ projectRoot, intermediateDir, previousScan, currentScan, importAnalysisPaths, dependencyAnalysisPaths, rubyMixinResolution }) {
   const inputPath = join(intermediateDir, 'incremental-import-input.json');
   const outputPath = join(intermediateDir, 'incremental-import-output.json');
   const analysisPaths = sorted([...importAnalysisPaths, ...dependencyAnalysisPaths]);
@@ -503,6 +513,9 @@ function refreshResolutionMaps({ projectRoot, intermediateDir, previousScan, cur
   });
   run(process.execPath, [IMPORT_SCRIPT, inputPath, outputPath]);
   const extraction = readJson(outputPath);
+  if (extraction.rubyMixinResolution !== rubyMixinResolution) {
+    throw new Error('Ruby mixin resolution changed during dependency extraction. Run incremental preparation again.');
+  }
   const failures = Array.isArray(extraction?.failures) ? extraction.failures : [];
   if (failures.length > 0) {
     const preview = failures
@@ -527,6 +540,7 @@ function refreshResolutionMaps({ projectRoot, intermediateDir, previousScan, cur
   }
   return {
     importMap,
+    rubyMixinResolution,
     ...refreshDependencyData({ previousScan, currentScan, extraction,
       refreshPaths: dependencyAnalysisPaths, diagnosticRefreshPaths: analysisPaths }),
   };
@@ -550,7 +564,7 @@ function pruneExistingGraph(graph, pathsToReplace, importPathsToRefresh = new Se
     return source && target && dependencyPathsToRefresh.has(source)
       && DEPENDENCY_TYPES.has(edge.type)
       && (edge.direction ?? 'forward') === 'forward'
-      && (edge.recoveredFromDependencyMap === true
+      && (hasRecoveredDependency(edge)
         || previousFacts.has(JSON.stringify([source, target, edge.type])));
   }
   const nodes = [];
@@ -791,17 +805,20 @@ async function main() {
   let importAnalysisPaths = importResolutionContextChanged
     ? currentInventory
     : sorted([...currentChangedPaths, ...missingImportEntries]);
+  const rubyMixinResolution = loadRubyMixinResolution(projectRoot);
   const dependencyRefresh = dependencyRefreshPaths({
+    rubyMixinResolution,
     previousScan: baselineScan,
     currentScan,
     graph: baselineGraph,
     changedPaths: [...nonGeneratedDiffPaths, ...reclassifiedPaths],
     inventoryChanged: analysis.newFiles.length > 0 || deletedFiles.length > 0,
     // A failed finalization may have published a newer graph before saving
-    // fingerprints/meta. Re-enter merge from the immutable graph baseline;
-    // SKIP would otherwise leave that abandoned head's typed edges in place.
+    // fingerprints/meta. Re-enter merge from the immutable graph baseline.
+    // A settings-only retry can also abandon a different mode at the same HEAD.
     forceRefresh: decision.action === 'FULL_UPDATE'
-      || Boolean(graph?.project?.gitCommitHash && graph.project.gitCommitHash !== baseCommit),
+      || Boolean(graph?.project?.gitCommitHash && graph.project.gitCommitHash !== baseCommit)
+      || (existingSnapshot?.baseCommit === baseCommit && oldScan?.rubyMixinResolution !== rubyMixinResolution),
   });
   // Resolver upgrades can change both Ruby requires and Rails asset directives.
   // Gemfile edits can enable or disable a template processor for unchanged manifests.
@@ -815,15 +832,16 @@ async function main() {
   const needsDependencyMerge = dependencyRefresh.paths.length > 0 || (dependencyRefresh.versionChanged && assetRefresh.length > 0);
   if (decision.action === 'SKIP' && needsDependencyMerge) {
     decision.action = 'PARTIAL_UPDATE';
-    decision.reason = dependencyRefresh.versionChanged
-      ? 'Ruby dependency resolver version changed; refresh deterministic facts'
-      : 'Ruby dependency context changed; refresh deterministic facts';
+    if (dependencyRefresh.versionChanged) decision.reason = 'Ruby dependency resolver version changed; refresh deterministic facts';
+    else if (dependencyRefresh.modeChanged) decision.reason = 'Ruby mixin resolution mode changed';
+    else decision.reason = 'Ruby dependency context changed; refresh deterministic facts';
   }
   const resolutionMaps = refreshResolutionMaps({
     projectRoot,
     intermediateDir,
     previousScan: baselineScan,
     currentScan,
+    rubyMixinResolution,
     importAnalysisPaths,
     dependencyAnalysisPaths: dependencyRefresh.paths,
   });
@@ -862,6 +880,8 @@ async function main() {
     dependencyMapRefreshPaths: dependencyRefresh.paths,
     dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
     dependencyResolverVersionChanged: dependencyRefresh.versionChanged,
+    rubyMixinResolution,
+    rubyMixinResolutionChanged: dependencyRefresh.modeChanged,
     rerunArchitecture: decision.rerunArchitecture,
     rerunTour: decision.rerunTour,
     reason: decision.reason,

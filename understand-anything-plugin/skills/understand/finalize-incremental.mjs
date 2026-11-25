@@ -533,6 +533,9 @@ async function main() {
     }
     throw error;
   }
+  // A new settings-only run has the same Git baseline as the completed run.
+  // Future prepares must start from the graph and mode we just published.
+  if (plan.baseCommit === plan.headCommit) rmSync(join(intermediateDir, 'incremental-baseline.json'), { force: true });
   process.stdout.write(
     `Incremental update finalized: ${plan.action}; analyzedFiles=${scan.totalFiles}\n`,
   );
