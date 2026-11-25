@@ -394,6 +394,33 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
   }
   const targets = (scan, source = consumer) => [...new Set(scan.dependencyMap[source].map(fact => fact.target))].sort();
 
+  it('publishes a new markup dependency at the same commit and clears it after a template edit', () => {
+    const view = 'app/views/people/show.html.erb';
+    const partial = 'app/views/shared/_person.html.erb';
+    const f = railsFixture({[view]: '<%= render "shared/person" %>', [partial]: 'Person'});
+    const baseline = f.read('scan-result.json');
+    baseline.dependencyResolverVersion = 6;
+    baseline.dependencyMap[view] = [];
+    f.write('scan-result.json', baseline);
+    const graphPath = join(f.root, '.ua', 'knowledge-graph.json');
+    const edge = {source: 'file:' + view, target: 'file:' + partial, type: 'depends_on'};
+    const oldGraph = JSON.parse(readFileSync(graphPath, 'utf8'));
+    oldGraph.edges = oldGraph.edges.filter(e => e.source !== edge.source || e.target !== edge.target);
+    writeFileSync(graphPath, JSON.stringify(oldGraph));
+
+    const migrated = prepare(f.root, f.baseCommit);
+    expect(migrated.plan.filesToReanalyze).toEqual([]);
+    expect(targets(migrated.scan, view)).toEqual([partial]);
+    run(python, [mergeScript, f.root], f.root);
+    run(process.execPath, [finalizeScript, f.root], f.root);
+    expect(JSON.parse(readFileSync(graphPath, 'utf8')).edges).toContainEqual(expect.objectContaining(edge));
+
+    writeProjectFile(f.root, view, 'No partial here');
+    commit(f.root, 'remove view partial render');
+    expect(targets(prepare(f.root, f.baseCommit).scan, view)).toEqual([]);
+    expect(f.read('batch-existing.json').edges).not.toContainEqual(expect.objectContaining(edge));
+  });
+
   it('retains independently directed edges alongside refreshed forward facts through publication', () => {
     const f = railsFixture();
     const baseline = f.read('scan-result.json');
