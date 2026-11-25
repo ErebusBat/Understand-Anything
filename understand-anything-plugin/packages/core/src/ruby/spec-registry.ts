@@ -1,5 +1,6 @@
 import { rubyCall, rubyConstant, rubyLiteral, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { exampleForBuilder, SpecFactorySyntax } from "./spec-factory-syntax.js";
+import { VcrCassettes } from "./vcr-cassettes.js";
 import type { DependencyFact } from "./types.js";
 
 const sharedDefinitions = new Set(["shared_examples", "shared_examples_for", "shared_context"]);
@@ -73,6 +74,7 @@ function register(providers: Providers, key: string, target: string | null): voi
 }
 
 export class RubySpecRegistry {
+  private readonly vcr = new VcrCassettes();
   private readonly factorySyntax = new SpecFactorySyntax();
   private readonly shared = new Map<string, string | null>();
   private readonly factories: Record<FactoryRegistry, Providers> = {FactoryBot: new Map(), FactoryGirl: new Map()};
@@ -80,6 +82,8 @@ export class RubySpecRegistry {
   private readonly replacedRegistries = new Set<string>();
   private readonly localReplacements = new Map<string, Set<string>>();
   private readonly unknownNames: Record<FactoryRegistry, FactoryNameBounds[]> = {FactoryBot: [], FactoryGirl: []};
+
+  constructor(private readonly hasCassette: (path: string) => boolean = () => false) {}
 
   readDefaultOptions(content: string): void {
     this.factorySyntax.readDefaultOptions(content);
@@ -98,7 +102,7 @@ export class RubySpecRegistry {
         : node.type === "assignment" ? node.childForFieldName("left") : null;
       const qualified = rubyConstant(binding);
       const namePart = qualified?.split("::").pop();
-      if ((spec && namePart === "RSpec") || namePart === "FactoryBot" || namePart === "FactoryGirl") {
+      if ((spec && (namePart === "RSpec" || namePart === "VCR" || namePart === "Rails")) || namePart === "FactoryBot" || namePart === "FactoryGirl") {
         if (qualified === "::" + namePart || qualified === namePart && topLevelBinding(node)) {
           this.replacedRegistries.add(namePart);
         } else {
@@ -109,6 +113,7 @@ export class RubySpecRegistry {
       }
       const call = rubyCall(node);
       if (!call) return;
+      if (spec) this.vcr.inspect(path, node, call);
       const {method, receiver, args} = call;
       if (method === "factory" && !receiver) {
         const definition = factoryDefinition(node);
@@ -162,7 +167,8 @@ export class RubySpecRegistry {
   }
 
   dependencies(path: string, hasRailsRoot = false): DependencyFact[] {
-    const facts: DependencyFact[] = [];
+    const shadowed = (file: string, name: string) => this.replacedRegistries.has(name) || !!this.localReplacements.get(file)?.has(name);
+    const facts = this.vcr.dependencies(path, hasRailsRoot, this.factorySyntax, shadowed).filter(f => this.hasCassette(f.target));
     for (const site of this.uses.get(path) ?? []) {
       const registry = site.registry;
       if (this.replacedRegistries.has(registry) || this.localReplacements.get(path)?.has(registry)
@@ -182,15 +188,19 @@ export class RubySpecRegistry {
 /** A hosted engine shares its application's constants, but runs its own test
  * suite. Keep registry names, helper loads and ambiguities inside each package. */
 export class RubyTestSuites {
-  private readonly suites = new Map<string, RubySpecRegistry>([["", new RubySpecRegistry()]]);
+  private readonly suites = new Map<string, RubySpecRegistry>();
   private readonly prefixes: string[];
 
   constructor(files: readonly {path: string}[]) {
+    const prefixes = new Set([""]);
+    const yml = new Set<string>();
     for (const {path} of files) {
+      if (path.endsWith(".yml")) yml.add(path);
       const prefix = path.match(/^(.+\/)(?:[^/]+\.gemspec|Gemfile|\.rspec)$/)?.[1];
-      if (prefix && !this.suites.has(prefix)) this.suites.set(prefix, new RubySpecRegistry());
+      if (prefix) prefixes.add(prefix);
     }
-    this.prefixes = [...this.suites.keys()].sort((a, b) => b.length - a.length);
+    this.prefixes = [...prefixes].sort((a, b) => b.length - a.length);
+    for (const prefix of prefixes) this.suites.set(prefix, new RubySpecRegistry(path => yml.has(prefix + path)));
   }
 
   readDefaultOptions(path: string, content: string): void {

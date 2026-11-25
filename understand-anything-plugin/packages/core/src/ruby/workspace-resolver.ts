@@ -55,7 +55,13 @@ export class RubyWorkspaceDependencyResolver {
     }
     const schedulePaths = new Map<string, string[]>();
     const viewPaths = new Map<string, Set<string>>();
+    const yamlFiles = new Map<string, RubyInventoryFile[]>();
     for (const file of options.files) {
+      if (file.path.endsWith(".yml") && file.language !== "ruby") {
+        const prefix = this.rootPrefixFor(file.path);
+        if (!yamlFiles.has(prefix)) yamlFiles.set(prefix, []);
+        yamlFiles.get(prefix)!.push({...file, path: file.path.slice(prefix.length)});
+      }
       if (isResqueSchedulePath(file.path)) {
         const prefix = this.rootPrefixFor(file.path);
         const localPath = file.path.slice(prefix.length);
@@ -89,7 +95,7 @@ export class RubyWorkspaceDependencyResolver {
         for (const file of inventory) this.failures.push({path: prefix + file.path, stage: "ruby-file-read", message: error instanceof Error ? error.message : String(error)});
         continue;
       }
-      const resolver = new RubyDependencyResolver({...options, projectRoot, files: inventory});
+      const resolver = new RubyDependencyResolver({...options, projectRoot, files: [...inventory, ...(yamlFiles.get(prefix) ?? [])]});
       const views = new RailsViewResolver([...(viewPaths.get(prefix) ?? [])], projectRoot, resolver, options.plugin);
       const schedules = resqueScheduleDependencies(schedulePaths.get(prefix) ?? [], projectRoot, resolver, options.plugin);
       const context = {prefix, resolver, views, schedules};

@@ -100,15 +100,17 @@ export class SpecFactorySyntax {
 
   available(path: string, method: string, hasRailsRoot: boolean): boolean {
     if (!this.wiring.size || this.supportShadows.has(method) || this.localShadows.get(path)?.has(method)) return false;
+    return [...this.wiring].some(include => this.loadsHelper(path, include, hasRailsRoot));
+  }
+
+  loadsHelper(path: string, include: string, hasRailsRoot: boolean): boolean {
     const direct = this.loads.get(path)?.direct ?? [];
     const defaults = path.endsWith("_spec.rb") ? this.defaultHelpers : [];
     for (const target of [...direct, ...defaults]) {
-      if (this.wiring.has(target)) return true;
+      if (include === target) return true;
       if (!standardHelper.test(target)) continue;
       const helper = this.loads.get(target);
-      for (const include of this.wiring) {
-        if (helper?.direct.has(include) || hasRailsRoot && helper?.supportGlob && include.startsWith("spec/support/") && !include.split("/").some(part => part.startsWith("."))) return true;
-      }
+      if (helper?.direct.has(include) || hasRailsRoot && helper?.supportGlob && include.startsWith("spec/support/") && !include.split("/").some(part => part.startsWith("."))) return true;
     }
     return false;
   }
