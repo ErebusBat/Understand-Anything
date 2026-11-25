@@ -28,6 +28,8 @@ Constant lookup preserves actual Ruby lexical nesting, compact namespaces, and l
 
 An external ancestor can define the first name in a qualified `include` or `extend`. If its top-level spelling identifies one local module and the resolver finds no known shadow, the `unsupported_ancestor_lookup` diagnostic includes that file as `candidateTarget`. The diagnostic retains the source line for inspection. Confirmed mixins enter the dependency graph.
 
+The Ruby structural extractor also reads method definitions in modules that directly extend `ActiveSupport::Concern`. It records the names, parameters, and source lines of methods defined directly inside `included` and `class_methods` blocks, including singleton methods written with `def self.name` or `class << self`. Methods in an `included` block carry `owner: null` because the host is selected at runtime. Methods in a `class_methods` block belong to the concern's `ClassMethods` module.
+
 Direct `belongs_to`, `has_one`, `has_many`, and `has_and_belongs_to_many` associations are recognized in model and concern contexts when their names/options and local model targets can be resolved. Collection naming uses singularization; explicit `class_name` uses model namespace lookup. Polymorphic `belongs_to`, `through`, dynamic options, callback simulation, and join-model inference are outside this subset.
 
 Routes accept immediate literal HTTP declarations with `to: "controller#action"` and option-free `resources`/`resource` in the main application's `routes.draw` block. Both `Rails.application` and the statically declared application class can be the receiver. Literal `namespace` blocks qualify controller names, including when `path:` or `as:` changes the URL or route helpers. Singular resources pluralize the controller name. Other scopes, conditions, arbitrary blocks, mounts, drawn files, engine routes, and resource options produce diagnostics.
@@ -39,6 +41,8 @@ Ruby test pairing recognizes exact Minitest/RSpec unit-test paths, including `*_
 ## Incremental updates
 
 Ruby source changes conservatively refresh Ruby dependency facts, including consumers whose source did not change. Inventory changes, resolver version migration, and missing dependency baselines also trigger refresh. Empty refreshed fact lists replace old lists, and merge removes prior deterministic edges before recovering the current facts. Existing unrelated semantic relationships are preserved.
+
+On the first incremental run with concern-hook extraction, the scanner identifies Ruby files that may contain hook methods. Preparation compares their new function counts with the saved fingerprints even when the source bytes match. Files that gain methods or lack structural fingerprints enter reanalysis. The following run can reuse the updated baseline.
 
 The resolver diagnoses explicit loader overrides such as `config.autoloader = :classic` and disables inference for that application. Unsupported loader configuration, custom executable inflections, or an incomplete Ruby read/parse pass likewise suppress inferred Ruby facts. Safe explicit imports remain available, and incremental preparation stops on read/parse failures.
 
