@@ -298,7 +298,7 @@ export class RubyDependencyResolver {
         if (body && !declaration.conditional && declaration.superclass?.replace(/^::/, "") === "Grape::API") {
           for (const {node, kind} of grapeDependencyArguments(body)) reference(node, [name, ...nesting], kind, name);
         }
-        if (body && !declaration.conditional) declaration.methods = rubyMethodEvidence(body);
+        if (body && !declaration.conditional) declaration.methods = rubyMethodEvidence(body, declaration.kind);
         if (body && path.startsWith("app/jobs/")) declaration.performsJob = declaresJobEntryPoint(body, declaration.kind);
         if (body && declaration.kind === "class" && !superclass) {
           const statements = rubyStatements(body);

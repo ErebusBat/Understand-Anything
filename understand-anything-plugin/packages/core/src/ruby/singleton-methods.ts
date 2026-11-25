@@ -8,11 +8,28 @@ interface MethodEvidence {
 
 /** Only direct method declarations supply evidence for a receiver. Keep
  * visibility changes as counterevidence to inherited framework methods. */
-export function rubyMethodEvidence(body: RubyAstNode): MethodEvidence | undefined {
+export function rubyMethodEvidence(body: RubyAstNode, kind: "class" | "module" | "assignment"): MethodEvidence | undefined {
   const methods = new Set<string>(), hidden = new Set<string>();
   let declaresInitializer = false;
+  let moduleFunction = false;
+  const instanceMethods = new Set<string>();
   for (const node of rubyStatements(body)) {
-    if (node.type === "method" && node.childForFieldName("name")?.text === "initialize") declaresInitializer = true;
+    const method = node.type === "method" && node.childForFieldName("name")?.text;
+    if (method === "initialize") declaresInitializer = true;
+    if (kind === "module") {
+      if (node.type === "identifier" && ["module_function", "public", "protected", "private"].includes(node.text)) {
+        moduleFunction = node.text === "module_function";
+      } else if (method) {
+        instanceMethods.add(method);
+        if (moduleFunction) methods.add(method);
+      } else {
+        const call = rubyCall(node);
+        if (call?.method === "module_function" && !call.receiver && !call.block) for (const arg of call.args) {
+          const selector = rubyLiteral(arg);
+          if (typeof selector === "string" && instanceMethods.has(selector)) methods.add(selector);
+        }
+      }
+    }
     const singleton = rubySelfSingletonClass(node);
     let isPublic = true;
     for (const member of singleton ? rubyStatements(node.childForFieldName("body")) : [node]) {

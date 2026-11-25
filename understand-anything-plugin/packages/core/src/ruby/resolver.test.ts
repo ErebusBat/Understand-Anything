@@ -110,6 +110,30 @@ describe("bounded Rails dependency resolver", () => {
     expect(targets(strict, "app/api/v1/root.rb", "grape_helper")).toEqual([]);
   });
 
+  it("uses public module functions as evidence at Ruby receiver calls", () => {
+    const {resolver} = setup({
+      "app/services/formatter.rb": `module Formatter
+        def format; end
+        module_function :format
+        module_function
+        def parse; end
+        def hidden; end
+        private_class_method :hidden
+        public
+        def instance_only; end
+      end`,
+      "app/services/consumer.rb": `class Consumer < External
+        Formatter.format
+        Formatter.parse
+        Formatter.hidden
+        Formatter.instance_only
+      end`,
+    });
+    const facts = resolver.getDependencies("app/services/consumer.rb");
+    expect(facts.map(f => f.reference)).toEqual(["Formatter.format", "Formatter.parse"]);
+    expect(facts.every(f => f.resolution === "inferred")).toBe(true);
+  });
+
   it("finds conventional models/controllers, nested concerns, superclass and distinct include/extend", () => {
     const {resolver} = setup({
       "app/controllers/application_controller.rb":"class ApplicationController < ActionController::Base; end",
