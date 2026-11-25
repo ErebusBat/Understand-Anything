@@ -1,4 +1,4 @@
-import { rubyCall, rubyConstant, rubyLiteral, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
+import { rubyCall, rubyConstant, rubyLiteral, rubyOptions, rubyStatements, walkRuby, type RubyAstNode } from "./ast.js";
 import { exampleForBuilder, SpecFactorySyntax } from "./spec-factory-syntax.js";
 import { VcrCassettes } from "./vcr-cassettes.js";
 import type { DependencyFact } from "./types.js";
@@ -64,7 +64,7 @@ function factoryDefinition(node: RubyAstNode): FactoryRegistry | undefined {
   }
 }
 
-type Site = {kind: "rspec_shared_group" | "factory"; registry: "RSpec" | FactoryRegistry; key: string; reference: string; line: number; bareBuilder?: string};
+type Site = {kind: "rspec_shared_group" | "factory" | "factory_association"; registry: "RSpec" | FactoryRegistry; key: string; reference: string; line: number; bareBuilder?: string};
 type Providers = Map<string, string | null>;
 
 /** A second definition, including one with uncertain visibility, rules out
@@ -115,6 +115,16 @@ export class RubySpecRegistry {
       if (!call) return;
       if (spec) this.vcr.inspect(path, node, call);
       const {method, receiver, args} = call;
+      if (method === "association" && !receiver && !call.block && factoryFile) {
+        const owner = blockOwner(node), enclosing = rubyCall(owner);
+        const registry = owner && enclosing && !enclosing.receiver && ["factory", "trait"].includes(enclosing.method) && factoryDefinition(owner);
+        const name = rubyLiteral(args[0]), options = rubyOptions(args.slice(1));
+        if (!registry || typeof name !== "string" || !options) return;
+        const key = options.has("factory") ? options.get("factory") : name;
+        if (typeof key === "string") sites.push({kind: "factory_association", registry, key, line: node.startPosition.row + 1,
+          reference: "association " + args[0].text + (options.has("factory") ? " => " + key : "")});
+        return;
+      }
       if (method === "factory" && !receiver) {
         const definition = factoryDefinition(node);
         if (!factoryFile && !definition) return;

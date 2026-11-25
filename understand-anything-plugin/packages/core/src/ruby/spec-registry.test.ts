@@ -121,6 +121,27 @@ describe("legacy FactoryGirl suites", () => {
     }
   });
 
+  it("resolves literal factory association providers in factory and trait bodies", () => {
+    const source = "test/factories/payments.rb";
+    const association = `FactoryGirl.define do
+      factory :payment do
+        association :card
+        trait(:active) { association :instrument, factory: :payment_card, strategy: :build }
+        after(:create) { association :card }
+        association :missing
+        association :card, factory: dynamic_name
+        association :card, **overrides
+        fake.association :card
+      end
+    end`;
+    const files = {...suite, [source]: association};
+    expect(index(files, false, source)).toEqual([
+      {target: factory, kind: "factory_association", type: "depends_on", resolution: "inferred", reference: "association :card", line: 3},
+      {target: factory, kind: "factory_association", type: "depends_on", resolution: "inferred", reference: "association :instrument => payment_card", line: 4},
+    ]);
+    expect(index({...files, [source]: "FactoryGirl = Other\n" + association}, false, source)).toEqual([]);
+  });
+
   it("keeps rebindings and unknown names scoped to their named registry", () => {
     for (const replacement of ["FactoryGirl = LocalRegistry", "FactoryGirl.define { factory(dynamic_name) }"]) {
       expect(index({...suite, "test/factories/extra.rb": replacement}).map(f => f.target)).toEqual([modern]);
