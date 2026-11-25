@@ -57,6 +57,48 @@ describe('Ruby filesystem dependencies', () => {
     expect(importMap['alpha/dynamic.rb']).toEqual([]);
     expect(importMap['standalone/lib/example/engine.rb']).toEqual([]);
   });
+  it('resolves literal imports against the local gems selected by the host bundle', () => {
+    const gemspec = (name, paths = '') => [
+      'Gem::Specification.new do |s|', `  s.name = "${name}"`, paths, 'end',
+    ].join('\n');
+    const sources = {
+      'alpha/Gemfile': [
+        "gem 'news', '~> 1', :path => 'gems/news', :require => false",
+        "gem 'shop', path: 'engines/shop'", "gem 'sometimes', path: 'gems/sometimes' if enabled?",
+        "gem 'custom', path: 'gems/custom'", "gem 'outside', path: '../../../outside'",
+      ].join('\n'),
+      'alpha/config/application.rb': 'class App < Rails::Application; end',
+      'alpha/gems/news/Gemfile': 'gemspec',
+      'alpha/gems/news/news.gemspec': gemspec('news', '  s.require_paths = %w[src lib]'),
+      'alpha/gems/news/lib/news.rb': '', 'alpha/gems/news/src/news.rb': '',
+      'alpha/gems/news/src/shared.rb': '', 'alpha/gems/news/src/logger.rb': '', 'alpha/gems/news/src/maybe.rb': '',
+      'alpha/engines/shop/Gemfile': 'gemspec',
+      'alpha/engines/shop/shop.gemspec': gemspec('shop'),
+      'alpha/engines/shop/lib/shop.rb': 'require "news.rb"',
+      'alpha/engines/shop/lib/shared.rb': '', 'alpha/lib/logger.rb': '',
+      'alpha/gems/sometimes/sometimes.gemspec': gemspec('sometimes'),
+      'alpha/gems/sometimes/lib/conditional.rb': '', 'alpha/gems/sometimes/lib/maybe.rb': '',
+      'alpha/gems/custom/custom.gemspec': gemspec('custom', '  s.require_paths << ENV["LIB"] if enabled?'),
+      'alpha/gems/custom/lib/mutated.rb': '',
+      'alpha/run.rb': ['news', 'shop', 'shared', 'logger', 'conditional', 'mutated', 'maybe', '../gems/news/src/news']
+        .map(feature => `require "${feature}"`).join('\n'),
+      'alpha/engines/shop/spec/dummy/config/application.rb': 'require "shop"\nclass App < Rails::Application; end',
+      'alpha/private/config/application.rb': 'require "news"\nclass App < Rails::Application; end',
+      'alpha/tools/Gemfile': 'gem "json"', 'alpha/tools/run.rb': 'require "shop"',
+      'bravo/Gemfile': 'gem "json"', 'bravo/run.rb': 'require "news"',
+    };
+    const paths = ['alpha/run.rb', 'alpha/engines/shop/lib/shop.rb',
+      'alpha/engines/shop/spec/dummy/config/application.rb', 'alpha/private/config/application.rb',
+      'alpha/tools/run.rb', 'bravo/run.rb'];
+    const {importMap, failures} = extract(sources, paths);
+    expect(failures).toEqual([]);
+    expect(importMap).toEqual({
+      [paths[0]]: ['alpha/engines/shop/lib/shop.rb', 'alpha/gems/news/src/news.rb'],
+      [paths[1]]: ['alpha/gems/news/src/news.rb'], [paths[2]]: ['alpha/engines/shop/lib/shop.rb'],
+      [paths[3]]: [], [paths[4]]: [], [paths[5]]: [],
+    });
+  });
+
   it('resolves selected glob members only when the block consumes the yielded path directly', () => {
     const source = 'alpha/lib/config.rb';
     const sources = {

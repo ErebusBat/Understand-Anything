@@ -97,7 +97,7 @@ try {
 const {
   TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers,
   createRubyWorkspaceDependencyResolver, RUBY_DEPENDENCY_RESOLVER_VERSION, loadRubyMixinResolution,
-  rubyCall, rubyLiteral, collectRubyFileLoads, rubyFileGlobMatcher, isResqueSchedulePath,
+  rubyCall, rubyLiteral, collectRubyFileLoads, rubyFileGlobMatcher, isResqueSchedulePath, createBundledGemLookup,
 } = core;
 
 // ---------------------------------------------------------------------------
@@ -1487,7 +1487,7 @@ function parseRubyImports(plugin, path, content, railsRoot) {
  *
  * For require_relative: append `.rb` if missing, resolve against importer dir.
  * For require: probe lib/<src>.rb, app/<src>.rb, <src>.rb within the owning
- * application. Never fall back to an unrelated workspace-level library.
+ * application, and eligible Bundler path-gem require_paths for that consumer.
  */
 export function resolveRubyImport({ kind, source }, file, ctx) {
   if (!source || source.startsWith('/') || /^[a-z]:/i.test(source) || source.includes('\\')) return [];
@@ -1508,18 +1508,17 @@ export function resolveRubyImport({ kind, source }, file, ctx) {
   // Load-path probe order
   const prefix = ctx.rubyRootPrefix ?? '';
   const probes = [`${prefix}lib/${withExt}`, `${prefix}app/${withExt}`, `${prefix}${withExt}`];
+  let appTarget = probes.find(p => ctx.fileSet.has(p));
   // RSpec adds the project's spec directory to the load path. Restrict this
   // convention to explicit helper imports from that same suite.
   if (toPosix(file.path).startsWith(prefix + 'spec/') && /^(?:spec_helper|rails_helper)(?:\.rb)?$/.test(source)) {
     const helper = prefix + 'spec/' + withExt;
     if (ctx.fileSet.has(helper)) {
-      return probes.some(p => ctx.fileSet.has(p)) ? [] : [helper];
+      if (appTarget) return [];
+      appTarget = helper;
     }
   }
-  for (const p of probes) {
-    if (ctx.fileSet.has(p)) return [p];
-  }
-  return [];
+  return ctx.bundledGemLookup?.(toPosix(file.path), prefix, withExt, appTarget) ?? (appTarget ? [appTarget] : []);
 }
 
 /** Expand a fixed directory with a single or recursive extension glob. Ruby
@@ -2057,7 +2056,10 @@ async function main() {
   const rubyResolver = treeSitterReady
     ? createRubyWorkspaceDependencyResolver({ projectRoot, files, plugin: tsPlugin, mixinResolution: rubyMixinResolution })
     : null;
-  if (rubyResolver) failures.push(...rubyResolver.failures);
+  if (rubyResolver) {
+    failures.push(...rubyResolver.failures);
+    ctx.bundledGemLookup = createBundledGemLookup(tsPlugin, rubyResolver.sources, ctx.fileSet);
+  }
   const customTemplateScopes = new Set();
   for (const [path, source] of rubyResolver?.sources ?? []) {
     if (/\bHandlebarsAssets\b/.test(source)) customTemplateScopes.add(rubyResolver.rootPrefixFor(path));
