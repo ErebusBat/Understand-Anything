@@ -480,6 +480,8 @@ function refreshDependencyData({ previousScan, currentScan, extraction, refreshP
     if (diagnostic.path !== null && (!path || !currentPaths.has(path))) continue;
     const normalized = { path, code: diagnostic.code, message: diagnostic.message };
     if (Number.isInteger(diagnostic.line) && diagnostic.line > 0) normalized.line = diagnostic.line;
+    const candidateTarget = normalizeRelativePath(diagnostic.candidateTarget);
+    if (candidateTarget && currentPaths.has(candidateTarget)) normalized.candidateTarget = candidateTarget;
     diagnostics.set(JSON.stringify(normalized), normalized);
   }
   return {

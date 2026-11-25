@@ -516,10 +516,12 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
 
   it('recovers a missing namespaced concern link on upgrade and drops it after a loader change', () => {
     const model = 'app/models/item.rb';
+    const ambiguousModel = 'app/models/record.rb';
     const concern = 'app/models/concerns/item/searchable.rb';
     const f = railsFixture({
       Gemfile: "gem 'rails', '~> 4.2.10'\n",
       [model]: 'class Item; include Concerns::Item::Searchable; end',
+      [ambiguousModel]: 'class Record < ExternalBase; include Concerns::Item::Searchable; end',
       [concern]: 'module Concerns::Item::Searchable; end',
     });
     const pair = { source: `file:${model}`, target: `file:${concern}`, type: 'depends_on' };
@@ -532,6 +534,7 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     const baseline = f.read('scan-result.json');
     baseline.dependencyResolverVersion = 4;
     baseline.dependencyMap[model] = [];
+    baseline.dependencyDiagnostics = [];
     f.write('scan-result.json', baseline);
 
     const upgraded = prepare(f.root, f.baseCommit);
@@ -539,9 +542,15 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     expect(upgraded.scan.dependencyMap[model]).toContainEqual(expect.objectContaining({
       target: concern, kind: 'include', reference: 'Concerns::Item::Searchable',
     }));
+    const candidate = expect.objectContaining({
+      path: ambiguousModel, line: 1, candidateTarget: concern, code: 'unsupported_ancestor_lookup',
+    });
+    expect(upgraded.scan.dependencyDiagnostics).toContainEqual(candidate);
+    expect(upgraded.scan.dependencyMap[ambiguousModel]).toEqual([]);
     run(python, [mergeScript, f.root], f.root);
     run(process.execPath, [finalizeScript, f.root], f.root);
     expect(readGraph().edges).toContainEqual(expect.objectContaining(pair));
+    expect(readGraph().edges).not.toContainEqual(expect.objectContaining({...pair, source: `file:${ambiguousModel}`}));
 
     // Begin a new update from the published v5 graph, after the retry snapshot
     // for the completed upgrade has been cleaned away.
@@ -552,6 +561,7 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
     expect(modern.plan.dependencyResolverVersionChanged).toBe(false);
     expect(modern.plan.dependencyMapRefreshPaths).toContain(model);
     expect(modern.scan.dependencyMap[model]).toEqual([]);
+    expect(modern.scan.dependencyDiagnostics).not.toContainEqual(candidate);
     expect(modern.scan.dependencyDiagnostics).toContainEqual(expect.objectContaining({
       path: concern, code: 'unsupported_constant_mapping',
     }));

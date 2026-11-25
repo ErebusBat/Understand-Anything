@@ -58,6 +58,31 @@ describe("Ruby workspace contexts", () => {
     ]);
   });
 
+  it("uses each application's Gemfile for its own overlapping concern roots", () => {
+    const sources = {
+      "config/application.rb": application,
+      "app/models/concerns/auditable.rb": "module Concerns::Auditable; end",
+      "app/models/post.rb": "class Post; include Concerns::Auditable; end",
+      "app/models/comment.rb": "class Comment < ExternalRecord; include Concerns::Auditable; end",
+    };
+    const resolver = fixture({
+      ...sources, Gemfile: "gem 'rails', '~> 7.1'",
+      ...nested("services/legacy/", {...sources, Gemfile: "gem 'rails', '~> 4.2.10'"}),
+    }).resolve();
+    expect(resolver.getDependencies("services/legacy/app/models/post.rb")).toEqual([
+      expect.objectContaining({target: "services/legacy/app/models/concerns/auditable.rb", kind: "include"}),
+    ]);
+    expect(resolver.getDependencies("app/models/post.rb")).toEqual([]);
+    expect(resolver.getDependencies("services/legacy/app/models/comment.rb")).toEqual([]);
+    expect(resolver.diagnostics).toContainEqual(expect.objectContaining({
+      path: "services/legacy/app/models/comment.rb", code: "unsupported_ancestor_lookup",
+      candidateTarget: "services/legacy/app/models/concerns/auditable.rb",
+    }));
+    expect(resolver.diagnostics).toContainEqual(expect.objectContaining({
+      path: "app/models/concerns/auditable.rb", code: "unsupported_constant_mapping",
+    }));
+  });
+
   it.each(["broken.rb", "config/application.rb"])("contains a parse failure in %s to its owning application", path => {
     const resolver = fixture({
       ...nested("good/"), ...nested("bad/"), ["bad/" + path]: "class Broken <",
