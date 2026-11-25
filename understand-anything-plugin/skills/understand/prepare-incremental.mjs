@@ -143,7 +143,7 @@ function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths
   const missingEntries = dependencyPaths.some(path => !Array.isArray(previousScan?.dependencyMap?.[path]));
   // A declaration, association, root, or inflection can change resolution in
   // an unchanged consumer. Fingerprint STRUCTURAL/COSMETIC is not sufficient.
-  const contextChanged = inventoryChanged || changedPaths.some(isRubyPath)
+  const contextChanged = inventoryChanged || changedPaths.some(path => isRubyPath(path) || basename(path) === '.rspec')
     || changedPaths.some(path => candidatePaths.has(path));
   return {
     versionChanged, modeChanged,

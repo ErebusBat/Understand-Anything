@@ -262,7 +262,7 @@ describe('typed dependency incremental contracts', () => {
     dependencyMap: { 'app/models/person.rb': [], 'app/services/report.rb': [fact], 'src/extra.js': [] },
   });
 
-  it.each(['config/application.rb', 'config/initializers/inflections.rb', 'app/models/person.rb', 'engines/shop/lib/shop/engine.rb', 'tasks/update.rake'])(
+  it.each(['config/application.rb', 'config/initializers/inflections.rb', 'app/models/person.rb', 'engines/shop/lib/shop/engine.rb', 'tasks/update.rake', 'nested/app/.rspec'])(
     'refreshes every Ruby consumer when %s changes, even outside the current inventory', path => {
       const refresh = dependencyRefreshPaths({ previousScan: baseline(), currentScan: { files },
         graph: {}, changedPaths: [path], inventoryChanged: false });
