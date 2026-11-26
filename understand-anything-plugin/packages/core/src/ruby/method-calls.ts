@@ -29,14 +29,16 @@ export interface RubyMethodCallFact extends RubyMethodSite {
 /** Walk DSL blocks as well as normal bodies: a named helper remains a declaration.
  * No block receiver or runtime-installed method is inferred. */
 export function collectRubyMethodCalls(root: RubyAstNode): {symbols: RubyMethodSymbol[]; sites: RubyMethodSite[]} {
-  const symbols: RubyMethodSymbol[] = [], sites: RubyMethodSite[] = [];
+  const symbols: RubyMethodSymbol[] = [];
+  const sites: RubyMethodSite[] = [];
   const visit = (node: RubyAstNode, nesting: string[], caller?: RubyMethodSymbol, uncertainOwner = false) => {
     if (node.type === "class" || node.type === "module") {
       const raw = rubyConstant(node.childForFieldName("name"));
       if (!raw) return;
       const owner = raw.startsWith("::") ? raw.slice(2) : nesting[0] ? nesting[0] + "::" + raw : raw;
       const body = node.childForFieldName("body");
-      if (body) visit(body, [owner, ...nesting], undefined, uncertainOwner || (!raw.startsWith("::") && raw.includes("::") && nesting.length > 0));
+      const nestedQualified = !raw.startsWith("::") && raw.includes("::") && nesting.length > 0;
+      if (body) visit(body, [owner, ...nesting], undefined, uncertainOwner || nestedQualified);
       return;
     }
     if (node.type === "method" || node.type === "singleton_method") {
@@ -44,16 +46,29 @@ export function collectRubyMethodCalls(root: RubyAstNode): {symbols: RubyMethodS
       if (!method) return;
       const singleton = method.startsWith("self.");
       const object = node.type === "singleton_method" ? node.childForFieldName("object") : null;
-      caller = {owner: uncertainOwner || object && object.type !== "self" ? null : nesting[0] ?? "", name: method.replace(/^self\./, ""),
-        dispatch: singleton ? "singleton" : "instance", line: node.startPosition.row + 1, endLine: node.endPosition.row + 1};
+      const unknownReceiver = object !== null && object.type !== "self";
+      caller = {
+        owner: uncertainOwner || unknownReceiver ? null : nesting[0] ?? "",
+        name: method.replace(/^self\./, ""),
+        dispatch: singleton ? "singleton" : "instance",
+        line: node.startPosition.row + 1,
+        endLine: node.endPosition.row + 1,
+      };
       symbols.push(caller);
     }
     const call = rubyCall(node);
     if (call) {
       const receiver = rubyConstant(call.receiver);
-      sites.push({...(caller ? {caller} : {}), nesting: [...nesting], ...(receiver ? {receiver} : {}), selector: call.method,
+      sites.push({
+        ...(caller && { caller }),
+        nesting: [...nesting],
+        ...(receiver && { receiver }),
+        selector: call.method,
         dispatch: receiver ? "constant" : call.receiver ? "dynamic" : "implicit",
-        line: node.startPosition.row + 1, column: node.startPosition.column + 1, offset: node.startIndex});
+        line: node.startPosition.row + 1,
+        column: node.startPosition.column + 1,
+        offset: node.startIndex,
+      });
     }
     for (const child of rubyStatements(node)) {
       const dynamicBlock = call?.block?.id === child.id && (call.receiver !== null || call.method !== "helpers" || call.args.length > 0);
