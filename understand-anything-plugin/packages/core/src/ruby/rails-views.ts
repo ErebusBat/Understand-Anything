@@ -320,9 +320,20 @@ export class RailsViewResolver {
         if (!action) continue;
         const methodBody = method.childForFieldName("body");
         if (!methodBody) continue;
+        let bareMailShadowed = false;
+        const parameters = method.childForFieldName("parameters");
+        if (parameters) walkRuby(parameters, node => { if (node.type === "identifier" && node.text === "mail") bareMailShadowed = true; });
+        walkRuby(methodBody, node => {
+          if (["assignment", "operator_assignment"].includes(node.type)) {
+            const left = node.childForFieldName("left");
+            if (left) walkRuby(left, binding => { if (binding.type === "identifier" && binding.text === "mail") bareMailShadowed = true; });
+          }
+        });
         walkRuby(methodBody, node => {
           if (["block", "do_block", "lambda", "class", "module", "method", "singleton_method"].includes(node.type)) return false;
-          const call = rubyCall(node);
+          const call = rubyCall(node) ?? (node.type === "identifier" && node.text === "mail" && !bareMailShadowed
+            && node.parent?.childForFieldName("method")?.id !== node.id
+            ? {method: "mail", receiver: null, block: null, args: []} : null);
           if (!call || call.receiver || call.method !== "mail" || call.block) return;
           const options = new Map<string, RubyAstNode>();
           for (const pair of call.args.flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])) {

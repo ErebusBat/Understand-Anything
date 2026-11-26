@@ -108,6 +108,13 @@ describe("mailer template and partial evidence", () => {
     expect(resolver.getDependencies(view)).toEqual([expect.objectContaining({target: "app/views/accounts_mailer/_footer.html.erb", kind: "render"})]);
   });
 
+  it("supports mail with no explicit header arguments", () => {
+    const resolver = fixture({...base, [mailer]: "class AccountsMailer < ApplicationMailer; def welcome; mail; end; end", [view]: "Hi"});
+    expect(resolver.getDependencies(mailer).filter(f => f.kind === "mailer_template")).toEqual([
+      expect.objectContaining({target: view, resolution: "inferred"}),
+    ]);
+  });
+
   it.each(["welcome.text.erb", "welcome.json.jbuilder", "welcome.html.haml"])("rejects ambiguous formats and handlers: %s", sibling => {
     const resolver = fixture({...base, [mailer]: "class AccountsMailer < ApplicationMailer; def welcome; mail(to: 'a'); end; end",
       [view]: "Hi", ["app/views/accounts_mailer/" + sibling]: "Hi"});
@@ -127,6 +134,8 @@ describe("mailer template and partial evidence", () => {
   it("rejects dynamic paths, bodies, format blocks, unrelated classes and lookup overrides", () => {
     for (const source of [
       "class AccountsMailer < ApplicationMailer; def welcome; mail(template_name: choice); end; end",
+      "class AccountsMailer < ApplicationMailer; def welcome(mail); mail; end; end",
+      "class AccountsMailer < ApplicationMailer; def welcome; mail = 'Hi'; mail; end; end",
       "class AccountsMailer < ApplicationMailer; def welcome; mail(body: 'Hi'); end; end",
       "class AccountsMailer < ApplicationMailer; def welcome; mail { |format| format.html }; end; end",
       "class AccountsMailer < Other; def welcome; mail; end; end",
