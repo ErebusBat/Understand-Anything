@@ -70,3 +70,15 @@ On the first incremental run with concern-hook extraction, the scanner identifie
 The resolver diagnoses explicit loader overrides such as `config.autoloader = :classic` and disables inference for that application. Unsupported loader configuration, custom executable inflections, or an incomplete Ruby read/parse pass likewise suppress inferred Ruby facts. Safe explicit imports remain available, and incremental preparation stops on read/parse failures.
 
 Fixture tests cover recovered and rejected edges, pipeline propagation, repeatability, and incremental replacement. They do not establish compatibility with every Rails version or a full application/LLM analysis run.
+
+## Method and test evidence
+
+The Ruby scanner records the location and outcome of each recognized call site.
+For a uniquely resolved public singleton method, graph assembly links the caller
+and callee across batches. A dynamic selector can retain its known receiver
+without a method edge. For example, a synthetic fixture calling
+`TileCatalog.tiles_for_sheet` exercises cross-file lookup and incremental refresh.
+
+The graph also links supported mailer actions to templates and literal scenario
+steps to unique definitions in the same suite. Static test associations record
+whether the evidence came from an explicit RSpec subject or a filename match.
