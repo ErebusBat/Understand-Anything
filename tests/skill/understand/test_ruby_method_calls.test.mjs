@@ -127,6 +127,9 @@ describe('Ruby method calls through the shipped pipeline', () => {
       const deterministicCalls = graph => graph.edges.filter(edge => edge.recoveredFromMethodCallMap)
         .sort((a, b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
       expect(deterministicCalls(incrementalGraph)).toEqual(deterministicCalls(fullGraph));
+      const recoveredSymbols = graph => graph.nodes.filter(node => node.recoveredFromMethodCallMap)
+        .map(node => node.id).sort();
+      expect(recoveredSymbols(incrementalGraph)).toEqual(recoveredSymbols(fullGraph));
       previousGraph = incrementalGraph;
       previous = {...full, files};
     }
