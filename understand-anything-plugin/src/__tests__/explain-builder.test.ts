@@ -58,6 +58,16 @@ describe("explain-builder", () => {
       expect(ctx.targetNode).toBeNull();
     });
 
+    it("looks up a Ruby selector uniquely or by its full namespaced method name", () => {
+      const filePath = "app/services/preview.rb";
+      const method = { ...sampleGraph.nodes[1], filePath, name: "Atelier::Preview.self.run" };
+      const graph = { ...sampleGraph, nodes: [method] };
+      expect(buildExplainContext(graph, filePath + ":run").targetNode).toEqual(method);
+      graph.nodes.push({ ...method, id: "other", name: "Alt::Preview.self.run" });
+      expect(buildExplainContext(graph, filePath + ":run").targetNode).toBeNull();
+      expect(buildExplainContext(graph, filePath + ":" + method.name).targetNode).toEqual(method);
+    });
+
     it("finds function nodes by partial path match", () => {
       const ctx = buildExplainContext(sampleGraph, "src/auth.ts:login");
       expect(ctx.targetNode?.name).toBe("login");

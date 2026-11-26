@@ -29,13 +29,18 @@ export function buildExplainContext(
 
   // Check for path:function format (e.g. "src/auth.ts:login")
   const colonIdx = path.lastIndexOf(":");
-  if (colonIdx > 0 && !path.includes("://")) {
-    const filePath = path.slice(0, colonIdx);
-    const funcName = path.slice(colonIdx + 1);
-    targetNode =
-      nodes.find(
-        (n) => n.filePath === filePath && n.name === funcName,
-      ) ?? null;
+  // Ruby symbol names can contain namespace separators after the file path.
+  const rubySeparator = path.indexOf(".rb:");
+  const separator = rubySeparator >= 0 ? rubySeparator + 3 : colonIdx;
+  if (separator > 0 && !path.includes("://")) {
+    const filePath = path.slice(0, separator);
+    const funcName = path.slice(separator + 1);
+    const candidates = nodes.filter(n => n.filePath === filePath);
+    targetNode = candidates.find(n => n.name === funcName) ?? null;
+    if (!targetNode && filePath.endsWith(".rb")) {
+      const matches = candidates.filter(n => n.type === "function" && n.name.endsWith(`.${funcName}`));
+      if (matches.length === 1) targetNode = matches[0];
+    }
   }
 
   // Fall back to file path match
