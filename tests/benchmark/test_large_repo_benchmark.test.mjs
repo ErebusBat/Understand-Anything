@@ -450,6 +450,15 @@ describe('canonical benchmark digests', () => {
     );
   });
 
+  it('includes resolved Ruby call sites while preserving digests for inputs without calls', () => {
+    const batches = { batches: [] };
+    const digest = sites => benchmark.buildOutputDigest({}, batches, [], { 'probe.rb': sites });
+    const call = { line: 4, selector: 'run', outcome: 'resolved', target: 'worker.rb' };
+    expect(digest([])).toBe(benchmark.buildOutputDigest({}, batches, []));
+    expect(digest([call])).not.toBe(digest([]));
+    expect(digest([call])).not.toBe(digest([{ ...call, target: 'other.rb' }]));
+  });
+
   it('combines structure digests in deterministic batch input order', () => {
     expect(benchmark.buildOutputDigest).toBeTypeOf('function');
     const batches = {

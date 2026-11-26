@@ -1174,7 +1174,7 @@ export function canonicalSha256(value) {
   return hash.digest('hex');
 }
 
-export function buildOutputDigest(importMap, batches, structureSummaries) {
+export function buildOutputDigest(importMap, batches, structureSummaries, methodCallMap = {}) {
   const digestByBatchIndex = new Map(
     structureSummaries.map((summary) => [summary.batchIndex, summary.digest]),
   );
@@ -1182,11 +1182,16 @@ export function buildOutputDigest(importMap, batches, structureSummaries) {
     batchIndex: batch.batchIndex,
     digest: digestByBatchIndex.get(batch.batchIndex) ?? null,
   }));
-  return canonicalSha256({
+  const recordedCalls = Object.entries(methodCallMap).filter(([, sites]) => sites.length > 0);
+  const digests = {
     importMapDigest: canonicalSha256(importMap),
     batchesDigest: canonicalSha256(batches),
     structureBatchDigests,
-  });
+  };
+  if (recordedCalls.length) {
+    digests.methodCallDigest = canonicalSha256(Object.fromEntries(recordedCalls));
+  }
+  return canonicalSha256(digests);
 }
 
 function percentile(values, percentileValue) {
@@ -1818,6 +1823,7 @@ export async function runBenchmark(options, hooks = {}) {
       ...scan,
       importMap: imports.importMap,
       dependencyMap: imports.dependencyMap,
+      methodCallMap: imports.methodCallMap,
       dependencyContexts: imports.dependencyContexts,
       dependencyDiagnostics: imports.dependencyDiagnostics,
       dependencyResolverVersion: imports.dependencyResolverVersion,
@@ -2003,6 +2009,7 @@ export async function runBenchmark(options, hooks = {}) {
         imports.importMap,
         batches,
         structureSummaries,
+        imports.methodCallMap,
       ),
     };
     report.warnings = warningSummary(stageResults);
