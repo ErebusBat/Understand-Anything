@@ -8,6 +8,8 @@ import { rubyMethodEvidence } from "./singleton-methods.js";
 import { RubyTestSuites } from "./spec-registry.js";
 import { DEFAULT_RUBY_MIXIN_RESOLUTION, type DependencyDiagnostic, type DependencyFact, type RubyDependencyFailure, type RubyInventoryFile, type RubyMixinResolution } from "./types.js";
 
+import { collectRubyMethodCalls, type RubyMethodCallFact } from "./method-calls.js";
+
 interface Declaration {
   name: string;
   kind: "class" | "module" | "assignment";
@@ -114,6 +116,7 @@ export class RubyDependencyResolver {
   readonly isRails: boolean;
   readonly applicationRootKnown: boolean;
   readonly configuration: RubyConfiguration;
+  private readonly methodFacts = new Map<string, ReturnType<typeof collectRubyMethodCalls>>();
   private readonly facts = new Map<string, RubyFileFacts>();
   private readonly bindings = new Map<string, Set<string>>();
   private readonly valueBindings = new Map<string, string>();
@@ -156,6 +159,7 @@ export class RubyDependencyResolver {
       try {
         const detected = plugin.withSyntaxTree(path, source, root => {
           this.specRegistry.index(path, root);
+          this.methodFacts.set(path, collectRubyMethodCalls(root));
           if (path === "Gemfile") gemfileMajor = classicRailsMajor(root);
           if (!autoloadable) return {application: false, engines: false};
           let engines = false;
@@ -915,6 +919,26 @@ export class RubyDependencyResolver {
     return (!path || endpoint.path === path) && !!this.bindings.get(name)?.has(endpoint.path) && endpoint.kind === "class" && !!endpoint.superclass
       && this.lexicalName(endpoint.superclass, endpoint.nesting) === "Grape::API"
       && !this.declarations.has("Grape::API") && !this.blockedPrefix("Grape::API");
+  }
+
+  /** Resolve receiver independently of selector. Missing direct declarations never
+   * become method edges (method_missing and framework accessors stay dynamic). */
+  getMethodCalls(path: string): RubyMethodCallFact[] {
+    return (this.methodFacts.get(path)?.sites ?? []).map(site => {
+      if (!site.receiver) return {...site, outcome: site.dispatch === "dynamic" ? "dynamic" : "unclassified"};
+      const match = this.lookupConstant(site.receiver, {path, nesting: site.nesting, line: site.line,
+        valueRead: true, receiverCall: {method: site.selector, offset: site.offset}}, this.mixinResolution);
+      if (!match) return {...site, outcome: "external_or_ambiguous"};
+      const owner = this.lexicalName(site.receiver, site.nesting, this.consumerDeclarations.get(path));
+      const definitions = (this.declarations.get(owner) ?? []).filter(d => d.path === match.target
+        && d.methods?.publicSingleton?.has(site.selector) && !d.conditional);
+      const candidates = (this.methodFacts.get(match.target)?.symbols ?? []).filter(symbol =>
+        symbol.dispatch === "singleton" && symbol.name === site.selector
+        && definitions.some(d => d.name === symbol.owner));
+      if (candidates.length !== 1) return {...site, receiverTarget: match.target, outcome: "dynamic", ...match.resolution && {resolution: match.resolution}};
+      return {...site, receiverTarget: match.target, target: match.target, callee: candidates[0],
+        outcome: "resolved", ...match.resolution && {resolution: match.resolution}};
+    });
   }
 
   getDependencies(path: string): DependencyFact[] {

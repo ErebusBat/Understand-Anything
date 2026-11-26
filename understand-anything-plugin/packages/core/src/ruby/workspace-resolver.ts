@@ -155,6 +155,16 @@ export class RubyWorkspaceDependencyResolver {
       || compare(a.code, b.code) || compare(a.message, b.message));
   }
 
+  getMethodCalls(path: string) {
+    const context = this.owners.get(path);
+    if (!context) return [];
+    const {prefix, resolver} = context;
+    return resolver.getMethodCalls(path.slice(prefix.length)).map(fact => ({...fact,
+      ...(fact.target ? {target: prefix + fact.target} : {}),
+      ...(fact.receiverTarget ? {receiverTarget: prefix + fact.receiverTarget} : {}),
+    }));
+  }
+
   getDependencies(path: string): DependencyFact[] {
     const cached = this.dependencyCache.get(path);
     if (cached) return cached;

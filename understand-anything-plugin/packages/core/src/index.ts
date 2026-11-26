@@ -139,3 +139,5 @@ export * from "./ruby/resolver.js";
 export * from "./ruby/workspace-resolver.js";
 export { extractRailsRouteDependencies } from "./ruby/rails-routes.js";
 export { isResqueSchedulePath } from "./ruby/resque-schedule.js";
+
+export * from "./ruby/method-calls.js";

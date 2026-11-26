@@ -156,6 +156,29 @@ export class RubyExtractor implements LanguageExtractor {
       }
     }
 
+    // Grape's helpers block contains ordinary named methods. Preserve them
+    // even when the normal direct-body walk stops at the DSL call.
+    const visitHelpers = (node: TreeSitterNode, owner: string | null = "") => {
+      if (node.type === "class" || node.type === "module") {
+        const raw = rubyConstant(node.childForFieldName("name"));
+        owner = raw?.startsWith("::") ? raw.slice(2)
+          : raw && !raw.includes("::") ? (owner ? owner + "::" + raw : raw)
+          : owner === "" ? raw : null;
+      }
+      const call = rubyCall(node);
+      if (call?.block && !call.receiver && call.method === "helpers" && !call.args.length) {
+        for (const definition of rubyStatements(call.block.childForFieldName("body"))) {
+          if ((definition.type === "method" || definition.type === "singleton_method")
+            && !functions.some(fn => fn.lineRange[0] === definition.startPosition.row + 1 && fn.name === rubyMethodName(definition))) {
+            this.extractMethod(definition, functions, owner);
+          }
+        }
+      }
+      if (node.type === "method" || node.type === "singleton_method") return;
+      for (const child of node.namedChildren) visitHelpers(child, owner);
+    };
+    visitHelpers(rootNode);
+    functions.sort((a, b) => a.lineRange[0] - b.lineRange[0]);
     return { functions, classes, imports, exports };
   }
 
