@@ -1463,6 +1463,8 @@ def scan_coverage(assembled: dict[str, Any], scan: dict[str, Any], extractions: 
         skipped.update(path for path in extraction.get("filesSkipped", []) if isinstance(path, str))
         analyzed.update(item["path"] for item in extraction.get("results", []) if isinstance(item, dict) and isinstance(item.get("path"), str))
         unreadable.update(item["path"] for item in extraction.get("filesUnreadable", []) if isinstance(item, dict) and isinstance(item.get("path"), str))
+    missing = files.keys() - analyzed - skipped - unreadable
+    structural_status = "unknown" if not extractions else "partial" if missing else "available"
     parser_skipped = skipped - unreadable
     connected = {edge.get(endpoint) for edge in assembled["edges"] for endpoint in ("source", "target")}
     paths_by_id = {node["id"]: node.get("filePath") for node in assembled["nodes"]}
@@ -1487,7 +1489,7 @@ def scan_coverage(assembled: dict[str, Any], scan: dict[str, Any], extractions: 
         item["kind"] for item in edge.get("dependencyEvidence", []) if isinstance(item, dict) and isinstance(item.get("kind"), str)})
     return {
         "structuralExtraction": {
-            "status": "available" if extractions else "unknown",
+            "status": structural_status, "filesWithoutArtifact": len(missing),
             "filesAnalyzed": len(analyzed), "filesUnreadable": len(unreadable),
             "parserSkipped": len(parser_skipped),
             "parserSkippedByLanguage": dict(sorted(Counter(files.get(path, {}).get("language", "unknown") for path in parser_skipped).items())),

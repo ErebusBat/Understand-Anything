@@ -94,6 +94,13 @@ class ScanCoverageTests(unittest.TestCase):
         self.assertEqual(coverage['dependencyExtraction']['graphEdgesByEvidenceKind'], {'mailer_template': 1})
         self.assertIn('runtime coverage unknown', coverage['testEvidence']['meaning'])
 
+    def test_incremental_structural_artifacts_describe_only_observed_files(self):
+        coverage = mbg.scan_coverage({'nodes': [], 'edges': []},
+                                     {'files': [{'path': 'a.rb'}, {'path': 'b.rb'}]},
+                                     [{'results': [{'path': 'a.rb'}]}])
+        self.assertEqual(coverage['structuralExtraction']['status'], 'partial')
+        self.assertEqual(coverage['structuralExtraction']['filesWithoutArtifact'], 1)
+
     def test_absent_structural_artifacts_mean_unknown(self):
         coverage = mbg.scan_coverage({'nodes': [], 'edges': []}, {}, [])
         self.assertEqual(coverage['structuralExtraction']['status'], 'unknown')
