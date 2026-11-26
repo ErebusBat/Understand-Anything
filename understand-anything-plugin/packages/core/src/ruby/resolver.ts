@@ -24,6 +24,8 @@ interface Declaration {
   performsJob?: boolean;
   methods?: ReturnType<typeof rubyMethodEvidence>;
   valueAssignment?: "name" | "qualified";
+  relativeScope?: string;
+  scopeOffset?: number;
 }
 interface Reference {
   reference: string;
@@ -131,6 +133,8 @@ export class RubyDependencyResolver {
   private readonly dynamicReflections = new Set<string>();
   private readonly specRegistry: RubyTestSuites;
   private readonly initializerPaths = new Set<string>();
+  private readonly enginePaths = new Set<string>();
+  private readonly declarationScopes = new Map<string, string>();
   private readonly mixinResolution: RubyMixinResolution;
   private indexIncomplete = false;
 
@@ -190,6 +194,7 @@ export class RubyDependencyResolver {
       } else {
         const prefix = match[1];
         engineRoots.set(path, prefix.replace(/\/$/, ""));
+        this.enginePaths.add(path);
         engineConfigPrefixes.add(`${prefix}config/`);
         for (const root of initialRubyConfiguration(autoloadPaths.filter(p => p.startsWith(prefix)).map(p => p.slice(prefix.length)), true, classicMajor).roots) {
           this.configuration.roots.push({...root, path: prefix + root.path, provenance: path});
@@ -209,10 +214,42 @@ export class RubyDependencyResolver {
     // A failed parse/read can hide an alias, root override, or duplicate. Never
     // turn that incomplete inventory into confident dependency facts.
     if (this.inferenceBlocked) return;
+    const configurationDiagnosticCount = this.collectedDiagnostics.length;
     for (const [path, source] of this.sources) {
       this.facts.set(path, plugin.withSyntaxTree(path, source, root => this.extractFacts(path, root)));
     }
+    const extractionDiagnostics = this.collectedDiagnostics.slice(configurationDiagnosticCount);
     this.buildIndex(classicMajor !== undefined);
+    // The first index establishes lexical namespaces, implicit autoload parents,
+    // and conflicting declarations before a relative qualified body is accepted.
+    // Re-extraction also gives every reference the actual Ruby lexical nesting.
+    for (const [path, facts] of this.facts) for (const declaration of facts.declarations) {
+      if (!declaration.relativeScope) continue;
+      const name = this.relativeDeclarationName(declaration.relativeScope, declaration.nesting, path);
+      if (name) this.declarationScopes.set(`${path}:${declaration.scopeOffset}`, name);
+    }
+    if (this.declarationScopes.size) {
+      // Reuse unchanged AST facts. Association extraction also owns a small
+      // cross-file reflection registry, so refresh its participating files.
+      const reflectionOwners = new Set([...this.reflections.keys(), ...this.dynamicReflections]);
+      const refresh = new Set([...this.facts].filter(([path, facts]) => facts.declarations.some(d =>
+        reflectionOwners.has(d.name) || this.declarationScopes.has(`${path}:${d.scopeOffset}`))).map(([path]) => path));
+      this.collectedDiagnostics.length = configurationDiagnosticCount;
+      this.collectedDiagnostics.push(...extractionDiagnostics.filter(d => d.path !== null && !refresh.has(d.path)));
+      this.diagnosticKeys.clear();
+      this.bindings.clear();
+      this.valueBindings.clear();
+      this.declarations.clear();
+      this.consumerDeclarations.clear();
+      this.namespaces.clear();
+      this.blocked.clear();
+      this.reflections.clear();
+      this.dynamicReflections.clear();
+      for (const [path, source] of this.sources) {
+        if (refresh.has(path)) this.facts.set(path, plugin.withSyntaxTree(path, source, root => this.extractFacts(path, root)));
+      }
+      this.buildIndex(classicMajor !== undefined);
+    }
   }
 
   get inferenceBlocked(): boolean {
@@ -287,12 +324,12 @@ export class RubyDependencyResolver {
       if (["class", "module"].includes(node.type)) {
         const raw = rubyConstant(node.childForFieldName("name"));
         if (!raw) return;
-        // Relative qualified declarations inside another lexical body depend on
-        // prior lookup. Reject instead of synthesizing a possibly wrong scope.
-        const uncertain = !raw.startsWith("::") && raw.includes("::") && nesting.length > 0;
-        const name = raw.startsWith("::") ? raw.slice(2) : nesting[0] ? `${nesting[0]}::${raw}` : raw;
+        const relativeScope = !raw.startsWith("::") && raw.includes("::") && nesting.length > 0 ? raw : undefined;
+        const recovered = this.declarationScopes.get(`${path}:${node.startIndex}`);
+        const uncertain = !!relativeScope && !recovered;
+        const name = recovered ?? (raw.startsWith("::") ? raw.slice(2) : nesting[0] ? `${nesting[0]}::${raw}` : raw);
         const superclass = node.childForFieldName("superclass")?.namedChildren[0];
-        const declaration: Declaration = {name, kind: node.type as "class" | "module", path, line: node.startPosition.row + 1, nesting: [...nesting], mixins: [], conditional: conditional || inMethod || uncertain};
+        const declaration: Declaration = {name, kind: node.type as "class" | "module", path, line: node.startPosition.row + 1, nesting: [...nesting], mixins: [], conditional: conditional || inMethod || uncertain, relativeScope, scopeOffset: node.startIndex};
         if (superclass) {
           declaration.superclass = rubyConstant(superclass) ?? "<dynamic>";
           reference(superclass, nesting, "superclass");
@@ -508,6 +545,9 @@ export class RubyDependencyResolver {
       });
       const namespaceTargets = corroborated.length ? corroborated : expected;
       for (const declaration of facts.declarations) {
+        // An unresolved qualified body's guessed spelling is not evidence of
+        // a lexical namespace: it could otherwise shadow the real outer owner.
+        if (declaration.relativeScope && !this.declarationScopes.has(`${path}:${declaration.scopeOffset}`)) continue;
         // Namespace wrappers in a nested file are not additional autoload
         // targets or independent reopenings of the namespace's own file.
         const direct = corroborated.includes(declaration.name);
@@ -587,6 +627,55 @@ export class RubyDependencyResolver {
     const parts = name.split("::");
     while (parts.length) { if (this.blocked.has(parts.join("::"))) return true; parts.pop(); }
     return false;
+  }
+
+  private relativeDeclarationName(reference: string, nesting: string[], path: string): string | null {
+    const separator = reference.lastIndexOf("::");
+    const parent = reference.slice(0, separator);
+    const first = parent.split("::")[0];
+    const locals = this.consumerDeclarations.get(path);
+    const lexical = nesting.some(scope => locals?.has(`${scope}::${first}`) || this.namespaces.has(`${scope}::${first}`));
+    if (!lexical && nesting[0] && this.ancestorLookup(nesting[0], first, new Set(), locals) !== "clear") return null;
+    const owner = this.lexicalName(parent, nesting, locals);
+    if (this.blockedPrefix(owner)) return null;
+    const parts = owner.split("::");
+    while (parts.length) {
+      const name = parts.join("::");
+      if (!this.namespaces.has(name) && !locals?.has(name)) return null;
+      if (locals?.get(name)?.some(d => d.conditional || d.kind === "assignment")) return null;
+      parts.pop();
+    }
+    return `${owner}${reference.slice(separator)}`;
+  }
+
+  /** A host loads its local engines at boot even when their lib directories
+   * are not autoload roots. This evidence is restricted to verified engine
+   * declarations, and must still respect all competing/shadowing names. */
+  resolveRouteMount(reference: string, options: RubyResolveOptions = {}): string | null {
+    const name = reference.replace(/^::/, "");
+    const engineDeclared = [...this.enginePaths].some(path => this.facts.get(path)?.declarations.some(d => d.name === name));
+    return engineDeclared ? this.resolveMountedEngine(reference) : this.resolveConstant(reference, options);
+  }
+
+  private resolveMountedEngine(reference: string): string | null {
+    if (this.inferenceBlocked || !/^(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*$/.test(reference)) return null;
+    const name = reference.replace(/^::/, "");
+    if (this.blockedPrefix(name) || this.blockedPrefix("Rails::Engine") || this.declarations.has("Rails::Engine")) return null;
+    const candidates = [...this.enginePaths].flatMap(path => this.facts.get(path)?.declarations ?? [])
+      .filter(d => d.name === name && d.kind === "class" && !d.conditional && d.superclass?.replace(/^::/, "") === "Rails::Engine");
+    if (candidates.length !== 1) return null;
+    const candidate = candidates[0];
+    if (this.lexicalName(candidate.superclass!, candidate.nesting, this.consumerDeclarations.get(candidate.path)) !== "Rails::Engine") return null;
+    const definitions = [...this.facts.values()].flatMap(facts => facts.declarations).filter(d => d.name === name);
+    if (definitions.some(d => d !== candidate)) return null;
+    const parts = name.split("::");
+    parts.pop();
+    while (parts.length) {
+      const parent = parts.join("::");
+      if ([...this.facts.values()].some(facts => facts.declarations.some(d => d.name === parent && (d.kind !== "module" || d.conditional)))) return null;
+      parts.pop();
+    }
+    return candidate.path;
   }
 
   /** A preceding literal load can supply a top-level module to this consumer
@@ -684,7 +773,10 @@ export class RubyDependencyResolver {
       if (definition.kind !== "class") return null;
       const constructor = call.method === "new" && definition.methods?.declaresInitializer;
       const modelMethod = options.macroTarget === "associationClassName" || ACTIVE_RECORD_CLASS_METHODS.has(call.method);
-      if (!constructor && !(modelMethod && /(?:^|\/)app\/models\//.test(target) && this.modelOwner(reference, target, new Set()))) return null;
+      // A qualified model with its own dynamic accessor hook corroborates the
+      // receiver only. It never proves that the requested selector is declared.
+      const dynamicAccessor = reference.includes("::") && definition.methods?.publicSingleton?.has("method_missing");
+      if (!constructor && !((modelMethod || dynamicAccessor) && /(?:^|\/)app\/models\//.test(target) && this.modelOwner(reference, target, new Set()))) return null;
       if (this.overridesClassMethod(reference, call.method)) return null;
     }
     if (target === options.path || !this.bindings.get(reference)?.has(target)) return null;

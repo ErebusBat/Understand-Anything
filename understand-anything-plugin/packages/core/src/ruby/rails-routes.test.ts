@@ -27,6 +27,19 @@ function extract(source: string, path = "config/routes.rb", isRails = true) {
 }
 
 describe("restricted Rails routes", () => {
+  it("accepts explicit literal controller/action pairs and rejects conflicting destinations", () => {
+    const result = extract(`Rails.application.routes.draw do
+      get '/people', controller: 'people', action: 'index'
+      get '/people', to: 'people', action: :index
+      get '/people', to: 'people#show', action: 'index'
+      get '/people', to: 'people#show', controller: 'admin/people', action: 'index'
+      get '/people', controller: dynamic, action: 'index'
+      get '/people', controller: 'people'
+    end`);
+    expect(result.dependencies.map(f => f.reference)).toEqual(["people#index", "people#index"]);
+    expect(result.diagnostics).toHaveLength(4);
+  });
+
   it("resolves literal HTTP and resource declarations to files, using shared inflections", () => {
     const result = extract(`Rails.application.routes.draw do
       get '/people/:id', to: 'admin/people#show'

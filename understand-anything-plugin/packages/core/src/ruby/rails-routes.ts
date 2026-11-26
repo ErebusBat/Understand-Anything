@@ -7,6 +7,7 @@ interface RouteResolver {
   camelize(value: string): string | null;
   pluralize(value: string): string | null;
   resolveConstant(reference: string, options?: { path?: string; line?: number }): string | null;
+  resolveRouteMount?(reference: string, options?: { path?: string; line?: number }): string | null;
 }
 
 const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "options"]);
@@ -73,7 +74,7 @@ function actionList(node: RubyAstNode): string[] | null {
 function httpDestination(call: Call, resource?: string): { controller: string; reference: string } | null {
   const [first, ...rest] = call.args;
   if (!first) return null;
-  const allowed = ["to", "as", "on", "constraints", "defaults", ...(call.method === "match" ? ["via"] : [])];
+  const allowed = ["to", "controller", "action", "as", "on", "constraints", "defaults", ...(call.method === "match" ? ["via"] : [])];
   let destination;
   let options;
   if (first.type === "pair" && first.childForFieldName("key")?.type === "string") {
@@ -88,9 +89,16 @@ function httpDestination(call: Call, resource?: string): { controller: string; r
     if (typeof path !== "string") return null;
     options = routeOptions(rest, allowed);
     destination = options?.has("to") ? rubyLiteral(options.get("to")) : call.method === "root" ? path : undefined;
-    if (options && !options.has("to") && call.method !== "root" && resource && ACTION.test(path)) {
+    if (options && !options.has("to") && !options.has("controller") && !options.has("action") && call.method !== "root" && resource && ACTION.test(path)) {
       destination = resource + "#" + path;
     }
+  }
+  if (options?.has("controller")) {
+    if (destination !== undefined || !options.has("action")) return null;
+    destination = `${rubyLiteral(options.get("controller"))}#${rubyLiteral(options.get("action"))}`;
+  } else if (options?.has("action")) {
+    if (typeof destination !== "string" || destination.includes("#")) return null;
+    destination += `#${rubyLiteral(options.get("action"))}`;
   }
   if (!options || (call.method === "match" && !options.has("via")) || typeof destination !== "string") return null;
   if (options.has("on") && (!resource || !["member", "collection", "new"].includes(String(rubyLiteral(options.get("on")))))) return null;
@@ -255,7 +263,8 @@ export function extractRailsRouteDependencies({ path, source, applicationSource,
         const line = node.startPosition.row + 1;
         let target: string | null;
         if ("rackApp" in site) {
-          target = resolver.resolveConstant(site.rackApp, {path, line});
+          target = resolver.resolveRouteMount ? resolver.resolveRouteMount(site.rackApp, {path, line})
+            : resolver.resolveConstant(site.rackApp, {path, line});
           if (!target) {
             diagnostics.push({path, line, code: "unresolved-route", message: `No unambiguous local mount target for ${site.rackApp}.`});
             return;
