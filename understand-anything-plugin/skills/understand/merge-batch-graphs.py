@@ -1324,11 +1324,10 @@ def recover_method_calls_from_scan(assembled: dict[str, Any], scan_result_path: 
     for node in assembled["nodes"]:
         if node.get("type") == "function":
             nodes_by_path.setdefault(node.get("filePath"), []).append(node)
-    recovered_nodes = 0
+    path_by_id = {node["id"]: node.get("filePath") for node in assembled["nodes"]}
     missing_endpoints = 0
 
     def endpoint(path: str, symbol: Any) -> str | None:
-        nonlocal recovered_nodes
         if not isinstance(symbol, dict) or path not in files or not isinstance(symbol.get("owner"), str):
             return None
         line, end = symbol.get("line"), symbol.get("endLine")
@@ -1353,10 +1352,10 @@ def recover_method_calls_from_scan(assembled: dict[str, Any], scan_result_path: 
         if candidates:
             return None
         node_id = f"function:{path}:{qualified}"
-        if any(node["id"] == node_id for node in assembled["nodes"]):
+        if node_id in path_by_id:
             # A same-named reopening needs a declaration location in its identity.
             node_id += f":{line}:{symbol.get('column', 1)}"
-        if any(node["id"] == node_id for node in assembled["nodes"]):
+        if node_id in path_by_id:
             return None
         node = {"id": node_id, "type": "function", "name": qualified, "filePath": path,
                 "lineRange": [line, end], "summary": f"Ruby {dispatch} method {qualified}.",
@@ -1365,23 +1364,25 @@ def recover_method_calls_from_scan(assembled: dict[str, Any], scan_result_path: 
         assembled["nodes"].append(node)
         nodes_by_path.setdefault(path, []).append(node)
         assembled["edges"].append({"source": files[path], "target": node_id, "type": "contains", "direction": "forward", "weight": 1.0})
-        recovered_nodes += 1
+        path_by_id[node_id] = path
         return node_id
 
     existing = {(edge.get("source"), edge.get("target"), edge.get("type")): edge for edge in assembled["edges"]
                 if normalize_direction(edge.get("direction")) == "forward"}
     grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
     outcomes: dict[str, int] = {}
-    seen_sites: set[str] = set()
+    parsed_sites = 0
     same_file = cross_file = recovered = 0
     for path, facts in sorted(method_map.items()):
+        seen_sites: set[str] = set()
         for fact in facts if isinstance(facts, list) else []:
             if not isinstance(fact, dict):
                 continue
-            site_key = json.dumps([path, fact], sort_keys=True)
+            site_key = json.dumps(fact, sort_keys=True)
             if site_key in seen_sites:
                 continue
             seen_sites.add(site_key)
+            parsed_sites += 1
             outcome = fact.get("outcome", "unclassified")
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
             if outcome != "resolved":
@@ -1406,10 +1407,11 @@ def recover_method_calls_from_scan(assembled: dict[str, Any], scan_result_path: 
         edge["description"] = "Resolved Ruby method calls: " + "; ".join(
             f"{item.get('receiver', '')}.{item.get('selector', '')} ({item['path']}:{item.get('line', '?')})"
             + (" [inferred]" if item.get("resolution") == "inferred" else "") for item in edge["methodCallEvidence"])
-        paths = [next(node["filePath"] for node in assembled["nodes"] if node["id"] == ident) for ident in key[:2]]
-        same_file += paths[0] == paths[1]
-        cross_file += paths[0] != paths[1]
-    assembled["methodCallSummary"] = {"parsedSites": len(seen_sites), "outcomes": outcomes,
+        if path_by_id[key[0]] == path_by_id[key[1]]:
+            same_file += 1
+        else:
+            cross_file += 1
+    assembled["methodCallSummary"] = {"parsedSites": parsed_sites, "outcomes": outcomes,
         "resolvedMissingEndpointSites": missing_endpoints, "recoveredFunctionNodes": sum(bool(node.get("recoveredFromMethodCallMap")) for node in assembled["nodes"]),
         "sameFileEdges": same_file, "crossFileEdges": cross_file}
     return recovered, ["  Ruby method calls: " + json.dumps(assembled["methodCallSummary"], sort_keys=True)]
