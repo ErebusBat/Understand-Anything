@@ -472,6 +472,49 @@ describe('Rails incremental dependency refresh', { timeout: 30_000 }, () => {
   }
   const targets = (scan, source = consumer) => [...new Set(scan.dependencyMap[source].map(fact => fact.target))].sort();
 
+  it('refreshes an unchanged feature after a competing definition is added, matching a full extraction', () => {
+    const feature = 'features/account.feature', steps = 'features/step_definitions/account.rb';
+    const f = railsFixture({[feature]: 'Feature: Account\nScenario: Open\nGiven an account\n', [steps]: 'Given("an account") {}'});
+    expect(targets(f.read('scan-result.json'), feature)).toEqual([steps]);
+    writeProjectFile(f.root, 'features/step_definitions/competing.rb', 'Then("an account") {}');
+    commit(f.root, 'add competing definition');
+    const result = prepare(f.root, f.baseCommit);
+    expect(result.plan.dependencyMapRefreshPaths).toContain(feature);
+    expect(targets(result.scan, feature)).toEqual([]);
+    expect(result.scan.dependencyDiagnostics).toContainEqual(expect.objectContaining({path: feature, code: 'ambiguous_cucumber_step'}));
+    f.write('full-input.json', {projectRoot: f.root, files: result.scan.files});
+    run(process.execPath, [importScript, join(f.intermediate, 'full-input.json'), join(f.intermediate, 'full-output.json')], f.root);
+    expect(result.scan.dependencyMap).toEqual(f.read('full-output.json').dependencyMap);
+  });
+
+  it('clears an unchanged mailer template link when another format is introduced', () => {
+    const mailer = 'app/mailers/people_mailer.rb', view = 'app/views/people_mailer/welcome.html.erb';
+    const f = railsFixture({[mailer]: 'class PeopleMailer < ActionMailer::Base; def welcome; mail; end; end', [view]: 'Hello'});
+    expect(targets(f.read('scan-result.json'), mailer)).toEqual([view]);
+    writeProjectFile(f.root, 'app/views/people_mailer/welcome.text.erb', 'Hello');
+    commit(f.root, 'introduce competing format');
+    const result = prepare(f.root, f.baseCommit);
+    expect(result.plan.dependencyMapRefreshPaths).toContain(mailer);
+    expect(targets(result.scan, mailer)).toEqual([]);
+  });
+
+  it('prunes a canonical subject association when its unchanged spec loses a unique production target', () => {
+    const spec = 'spec/requests/person_spec.rb';
+    const f = railsFixture({[spec]: 'RSpec.describe Person do; end'});
+    const graphPath = join(f.root, '.ua', 'knowledge-graph.json');
+    const graph = JSON.parse(readFileSync(graphPath, 'utf8'));
+    const edge = {source: 'file:' + target, target: 'file:' + spec, type: 'tested_by', direction: 'forward', weight: 0.5,
+      recoveredFromDependencyMap: true, dependencyEvidence: [{kind: 'rspec_subject', path: spec, line: 1}]};
+    graph.edges.push(edge);
+    writeFileSync(graphPath, JSON.stringify(graph));
+    writeProjectFile(f.root, 'app/models/competing.rb', 'class Person; end');
+    commit(f.root, 'add competing Person');
+    const result = prepare(f.root, f.baseCommit);
+    expect(result.scan.dependencyMap[spec].some(fact => fact.kind === 'rspec_subject')).toBe(false);
+    const retained = f.read('batch-existing.json');
+    expect(retained.edges).not.toContainEqual(edge);
+  });
+
   it.each(['remove cassette', 'change directory'])('refreshes an unchanged VCR spec after %s', change => {
     const spec = 'spec/gateway_spec.rb', config = 'spec/support/vcr.rb', cassette = 'spec/vcr/account.yml';
     const contents = "VCR.configure { |c| c.cassette_library_dir = Rails.root.join('spec', 'vcr') }";

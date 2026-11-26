@@ -87,6 +87,8 @@ export interface GraphEdge {
   /** Individual source references supporting a deterministic dependency edge. */
   dependencyEvidence?: {
     kind: string;
+    /** Evidence location, needed when tested_by reverses spec -> production. */
+    path?: string;
     reference?: string;
     line?: number;
     resolution?: "inferred";

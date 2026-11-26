@@ -113,7 +113,7 @@ function isRubyPath(path) {
 
 function hasRecoveredDependency(edge) {
   return edge.recoveredFromDependencyMap === true
-    || (Array.isArray(edge.dependencyEvidence) && edge.dependencyEvidence.some(site => site?.resolution === 'inferred'));
+    || (Array.isArray(edge.dependencyEvidence) && edge.dependencyEvidence.some(site => site?.resolution === 'inferred' || site?.kind === 'rspec_subject'));
 }
 
 function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths, inventoryChanged,
@@ -123,6 +123,7 @@ function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths
   const dependencyPaths = currentScan.files
     .filter(({language, path}) => language === 'ruby' || isRubyPath(path)
       || /(?:^|\/)app\/views\/.+\.(?:erb|haml|slim)$/.test(path)
+      || path.endsWith('.feature')
       || (isSprocketsAsset(path) && /\.(?:hbs|handlebars)$/.test(path))
       || isResqueSchedulePath(path))
     .map(file => file.path);
@@ -575,6 +576,9 @@ function pruneExistingGraph(graph, pathsToReplace, importPathsToRefresh = new Se
   function isRefreshedDependency(edge) {
     const source = filePathById.get(edge.source);
     const target = filePathById.get(edge.target);
+    if (edge.type === 'tested_by' && source && target
+      && dependencyPathsToRefresh.has(target) && hasRecoveredDependency(edge)
+      && edge.dependencyEvidence?.some(item => item.kind === 'rspec_subject')) return true;
     return source && target && dependencyPathsToRefresh.has(source)
       && DEPENDENCY_TYPES.has(edge.type)
       && (edge.direction ?? 'forward') === 'forward'

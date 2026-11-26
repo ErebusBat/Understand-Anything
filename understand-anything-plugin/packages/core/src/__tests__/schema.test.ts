@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  GraphEdgeSchema,
   validateGraph,
   sanitizeGraph,
   autoFixGraph,
@@ -865,5 +866,15 @@ describe("kind-aware alias normalization", () => {
     g.edges.push({ source: "screen:1:2", target: "token:color:brand", type: "styled_by", direction: "forward", weight: 0.5 });
     const res = validateGraph(g);
     expect(res.data!.edges.some((e) => e.source === "screen:1:2" && e.type === "uses_token")).toBe(true);
+  });
+});
+
+
+describe("static test evidence schema", () => {
+  it("preserves the spec's evidence location on a reversed tested_by edge", () => {
+    const evidence = [{kind: "rspec_subject", path: "spec/accounts_spec.rb", reference: "Account", line: 3}, {kind: "test_path_convention"}];
+    const edge = GraphEdgeSchema.parse({source: "file:app/models/account.rb", target: "file:spec/accounts_spec.rb",
+      type: "tested_by", direction: "forward", weight: 0.5, dependencyEvidence: evidence});
+    expect(edge.dependencyEvidence).toEqual(evidence);
   });
 });

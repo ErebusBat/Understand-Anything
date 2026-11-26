@@ -692,6 +692,13 @@ def _ensure_tested_tag(node: dict[str, Any]) -> bool:
     return True
 
 
+def merge_dependency_evidence(*groups: Any) -> list[dict[str, Any]]:
+    """Keep every independent static reason when duplicate pairs collapse."""
+    items = {json.dumps(item, sort_keys=True): item for group in groups if isinstance(group, list)
+             for item in group if isinstance(item, dict) and isinstance(item.get("kind"), str)}
+    return [items[key] for key in sorted(items)]
+
+
 def link_tests(
     nodes_by_id: dict[str, dict[str, Any]],
     edges: list[dict[str, Any]],
@@ -785,12 +792,16 @@ def link_tests(
             dropped += 1
             continue
 
+        edge["dependencyEvidence"] = merge_dependency_evidence(edge.get("dependencyEvidence") or [{"kind": "analyzer_test_association"}])
         if pair in covered:
             # Duplicate pair: keep the heavier-weight edge (mirrors the
             # weight-aware dedup in Step 6, which can't help here because
             # only one of the duplicates would reach it).
             existing_idx = pair_to_idx[pair]
             existing = edges[existing_idx]
+            evidence = merge_dependency_evidence(existing.get("dependencyEvidence"), edge.get("dependencyEvidence"))
+            existing["dependencyEvidence"] = evidence
+            edge["dependencyEvidence"] = evidence
             if _num(edge.get("weight", 0)) > _num(existing.get("weight", 0)):
                 # Heavier — replace existing slot. Apply the swap (or not)
                 # only on the survivor, so we never spend cycles canonicalizing
@@ -821,8 +832,6 @@ def link_tests(
     paired_test_ids = {test_id for (_prod_id, test_id) in covered}
     added = 0
     for test_path, test_node in test_nodes:
-        if test_node["id"] in paired_test_ids:
-            continue
         for cand_path in production_candidates(test_path):
             prod_node = file_paths_to_nodes.get(cand_path)
             if prod_node is None:
@@ -832,6 +841,10 @@ def link_tests(
                 continue
             pair = (prod_node["id"], test_node["id"])
             if pair in covered:
+                edge = edges[pair_to_idx[pair]]
+                edge["dependencyEvidence"] = merge_dependency_evidence(edge.get("dependencyEvidence"), [{"kind": "test_path_convention"}])
+                break
+            if test_node["id"] in paired_test_ids:
                 continue
             edges.append({
                 "source": prod_node["id"],
@@ -839,15 +852,21 @@ def link_tests(
                 "type": "tested_by",
                 "direction": "forward",
                 "weight": 0.5,
-                "description": "Path-based pairing (deterministic)",
+                "description": "Path-based pairing (deterministic static association; runtime coverage unknown)",
+                "dependencyEvidence": [{"kind": "test_path_convention"}],
             })
             covered.add(pair)
+            pair_to_idx[pair] = len(edges) - 1
             added += 1
             break
 
     # ── Tag every production node that ended up sourcing a tested_by edge
     # (covers Pass 1 canonical + swapped + Pass 2 supplements in one place).
     tagged = 0
+    tested_ids = {prod_id for prod_id, _ in covered}
+    for node_id, node in nodes_by_id.items():
+        if node_id not in tested_ids and node_id_to_classification.get(node_id) == "prod" and isinstance(node.get("tags"), list):
+            node["tags"] = [tag for tag in node["tags"] if tag != "tested"]
     for prod_id, _test_id in covered:
         prod_node = nodes_by_id.get(prod_id)
         if prod_node is None:
@@ -1029,7 +1048,7 @@ def merge_and_normalize(
 
     # Tested-by linker section — separate from Fixed since these are net-new
     # additions, not corrections.
-    if tested_by_added or tested_by_tagged:
+    if any(edge.get("type") == "tested_by" for edge in all_edges):
         report.append("")
         report.append("Tested-by linker:")
         report.append(f"  {tested_by_added:>4} × tested_by edges produced (path-convention supplement, production → test)")
@@ -1242,7 +1261,7 @@ def recover_dependencies_from_scan(
         if source is None:
             skipped_source += bool(facts)
             continue
-        grouped: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        grouped: dict[tuple[str, str, str], dict[str, dict[str, Any]]] = {}
         for fact in facts:
             if not isinstance(fact, dict):
                 continue
@@ -1266,24 +1285,37 @@ def recover_dependencies_from_scan(
                 evidence["line"] = fact["line"]
             if fact.get("resolution") == "inferred":
                 evidence["resolution"] = "inferred"
+            edge_source, edge_target = source, target
+            if kind == "rspec_subject":
+                # The source location belongs to the spec, while tested_by is
+                # canonically production -> test.
+                if not is_test_path(source_path) or is_test_path(target_path):
+                    continue
+                edge_source, edge_target, edge_type = target, source, "tested_by"
+                evidence["path"] = source_path
             serialized = json.dumps(evidence, sort_keys=True, ensure_ascii=False)
-            grouped.setdefault((target, edge_type), {})[serialized] = evidence
+            grouped.setdefault((edge_source, edge_target, edge_type), {})[serialized] = evidence
 
-        for (target, edge_type), evidence_by_key in sorted(grouped.items()):
+        for (edge_source, target, edge_type), evidence_by_key in sorted(grouped.items()):
             evidence = sorted(evidence_by_key.values(), key=lambda item: (
                 item["kind"], item.get("reference", ""), item.get("line", 0), item.get("resolution", ""),
             ))
-            key = (source, target, edge_type)
+            key = (edge_source, target, edge_type)
             edge = existing.get(key)
             if edge is None:
                 edge = {
-                    "source": source, "target": target, "type": edge_type,
-                    "direction": "forward", "weight": DEPENDENCY_WEIGHTS[edge_type],
+                    "source": edge_source, "target": target, "type": edge_type,
+                    "direction": "forward", "weight": 0.5 if edge_type == "tested_by" else DEPENDENCY_WEIGHTS[edge_type],
                 }
                 assembled["edges"].append(edge)
                 existing[key] = edge
                 recovered += 1
             edge["recoveredFromDependencyMap"] = True
+            if edge_type == "tested_by":
+                evidence = merge_dependency_evidence(edge.get("dependencyEvidence"), evidence)
+                production = next((node for node in assembled["nodes"] if node.get("id") == edge_source), None)
+                if production is not None:
+                    _ensure_tested_tag(production)
             edge["dependencyEvidence"] = evidence
             details = []
             for item in evidence:
@@ -1297,6 +1329,8 @@ def recover_dependencies_from_scan(
                 details.append(detail)
             prefix = "Resolved dependency facts: "
             description = prefix + "; ".join(details) + "."
+            if edge_type == "tested_by":
+                description += " Static test association; runtime coverage unknown."
             previous = edge.get("description")
             # Replace the analyzer's generated evidence line with the current
             # scan, retaining any other description supplied for this edge.
@@ -1415,6 +1449,57 @@ def recover_method_calls_from_scan(assembled: dict[str, Any], scan_result_path: 
         "resolvedMissingEndpointSites": missing_endpoints, "recoveredFunctionNodes": sum(bool(node.get("recoveredFromMethodCallMap")) for node in assembled["nodes"]),
         "sameFileEdges": same_file, "crossFileEdges": cross_file}
     return recovered, ["  Ruby method calls: " + json.dumps(assembled["methodCallSummary"], sort_keys=True)]
+
+
+def scan_coverage(assembled: dict[str, Any], scan: dict[str, Any], extractions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extraction coverage and relationships are separate measurements.
+
+    Missing structural artifacts mean unknown, never zero parser skips. An
+    isolated asset is descriptive inventory data, not automatically a failure.
+    """
+    files = {item["path"]: item for item in scan.get("files", []) if isinstance(item, dict) and isinstance(item.get("path"), str)}
+    skipped, analyzed, unreadable = set(), set(), set()
+    for extraction in extractions:
+        skipped.update(path for path in extraction.get("filesSkipped", []) if isinstance(path, str))
+        analyzed.update(item["path"] for item in extraction.get("results", []) if isinstance(item, dict) and isinstance(item.get("path"), str))
+        unreadable.update(item["path"] for item in extraction.get("filesUnreadable", []) if isinstance(item, dict) and isinstance(item.get("path"), str))
+    parser_skipped = skipped - unreadable
+    connected = {edge.get(endpoint) for edge in assembled["edges"] for endpoint in ("source", "target")}
+    paths_by_id = {node["id"]: node.get("filePath") for node in assembled["nodes"]}
+    connected_paths = {paths_by_id.get(node_id) for node_id in connected}
+    def role(node: dict[str, Any]) -> str:
+        path = node.get("filePath", "")
+        if node.get("id") != f"{node.get('type')}:{path}":
+            return "symbol_or_concept"
+        if re.search(r"(?:^|/)(?:vcr|vcr_cassettes|cassettes)/", path): return "vcr_fixture"
+        if "/app/views/" in "/" + path:
+            directory = path.split("app/views/", 1)[1].rsplit("/", 1)[0]
+            prefix = path.split("app/views/", 1)[0]
+            return "mailer_view" if prefix + "app/mailers/" + directory + ".rb" in files else "view"
+        if path.endswith(".feature"): return "feature"
+        if re.search(r"(?:^|/)(?:spec|test|features)/", path): return "test_or_fixture"
+        if re.search(r"(?:^|/)(?:assets|public|images|fonts)/", path): return "asset"
+        return files.get(path, {}).get("fileCategory", "unknown")
+    isolated = [node for node in assembled["nodes"] if node["id"] not in connected]
+    facts_by_kind = Counter(fact.get("kind", "unknown") for facts in scan.get("dependencyMap", {}).values()
+                            if isinstance(facts, list) for fact in facts if isinstance(fact, dict))
+    edges_by_kind = Counter(kind for edge in assembled["edges"] for kind in {
+        item["kind"] for item in edge.get("dependencyEvidence", []) if isinstance(item, dict) and isinstance(item.get("kind"), str)})
+    return {
+        "structuralExtraction": {
+            "status": "available" if extractions else "unknown",
+            "filesAnalyzed": len(analyzed), "filesUnreadable": len(unreadable),
+            "parserSkipped": len(parser_skipped),
+            "parserSkippedByLanguage": dict(sorted(Counter(files.get(path, {}).get("language", "unknown") for path in parser_skipped).items())),
+            "parserSkippedWithGraphRelationships": len(parser_skipped & connected_paths),
+        },
+        "dependencyExtraction": {"diagnosticsByCode": dict(sorted(Counter(item.get("code", "unknown") for item in scan.get("dependencyDiagnostics", []) if isinstance(item, dict)).items())),
+                                 "factSitesByKind": dict(sorted(facts_by_kind.items())),
+                                 "graphEdgesByEvidenceKind": dict(sorted(edges_by_kind.items()))},
+        "isolatedNodes": {"total": len(isolated), "byRole": dict(sorted(Counter(role(node) for node in isolated).items()))},
+        "testEvidence": {"meaning": "Static test associations; runtime coverage unknown unless separate execution evidence is supplied.",
+                         "provenanceByKind": {kind: edges_by_kind[kind] for kind in ("test_path_convention", "rspec_subject", "analyzer_test_association")}},
+    }
 
 
 # ── Main ──────────────────────────────────────────────────────────────────
@@ -1608,6 +1693,33 @@ def main() -> None:
 
     _, method_report = recover_method_calls_from_scan(assembled, scan_result_path)
     report.extend(method_report)
+
+    static_test_edges = [edge for edge in assembled["edges"] if edge.get("type") == "tested_by"]
+    if static_test_edges:
+        kinds = Counter(item.get("kind", "unknown") for edge in static_test_edges
+                        for item in edge.get("dependencyEvidence", []))
+        report.append("")
+        report.append("Static test associations (production → test):")
+        for kind, count in sorted(kinds.items()):
+            report.append(f"  {count:>4} × {kind} evidence records")
+        report.append("  Runtime coverage: unknown unless separate execution evidence is supplied; static links do not establish coverage.")
+
+    try:
+        scan = json.loads(scan_result_path.read_text(encoding="utf-8"))
+        extractions = []
+        for path in sorted((resolve_ua_dir(project_root) / "tmp").glob("ua-file-extract-results-*.json")):
+            extractions.append(json.loads(path.read_text(encoding="utf-8")))
+        coverage = scan_coverage(assembled, scan, extractions)
+        (intermediate_dir / "scan-coverage.json").write_text(json.dumps(coverage, indent=2) + "\n", encoding="utf-8")
+        report.append("")
+        report.append("Extraction coverage (structural parsing and dependencies measured separately):")
+        structural = coverage["structuralExtraction"]
+        report.append(f"  Structural artifacts: {structural['status']}; parser-skipped by language: {structural['parserSkippedByLanguage']}")
+        report.append(f"  Isolated nodes by role: {coverage['isolatedNodes']['byRole']} (isolation alone is not an error)")
+        report.append(f"  Dependency fact sites by kind: {coverage['dependencyExtraction']['factSitesByKind']}")
+        report.append(f"  Graph edges by evidence kind: {coverage['dependencyExtraction']['graphEdgesByEvidenceKind']}")
+    except (OSError, ValueError) as error:
+        report.append(f"  Extraction coverage unavailable: {error}")
 
     # Print report
     print("", file=sys.stderr)

@@ -90,6 +90,7 @@ describe('extract-structure.mjs — unreadable files vs. files with no parser', 
     expect(run.output.filesSkipped.sort()).toEqual(['src/missing.ts', 'src/unsupported.xyz']);
 
     // The unreadable file is surfaced on stderr rather than reading as routine.
+    expect(run.output.structuralCoverage).toEqual({analyzed: 1, unreadable: 1, parserSkipped: 1, skippedByLanguage: {unknown: 1}});
     expect(run.stderr).toContain('src/missing.ts');
     expect(run.stderr).toContain('projectRoot');
   });

@@ -137,6 +137,23 @@ async function main() {
     results.push(result);
   }
 
+  // Structural parser coverage is independent of dependency extraction:
+  // ERB and feature files can have links without a structural parser result.
+  const unreadable = new Set(filesUnreadable.map(file => file.path));
+  const skipped = new Set(filesSkipped);
+  const skippedByLanguage = {};
+  for (const file of batchFiles) {
+    if (skipped.has(file.path) && !unreadable.has(file.path)) {
+      const language = file.language || 'unknown';
+      skippedByLanguage[language] = (skippedByLanguage[language] || 0) + 1;
+    }
+  }
+  const structuralCoverage = {
+    analyzed: results.length, unreadable: unreadable.size,
+    parserSkipped: filesSkipped.length - unreadable.size,
+    skippedByLanguage: Object.fromEntries(Object.entries(skippedByLanguage).sort()),
+  };
+
   // Write output
   const output = {
     scriptCompleted: true,
@@ -144,6 +161,7 @@ async function main() {
     filesSkipped,
     filesUnreadable,
     analysisOutcomes,
+    structuralCoverage,
     results,
   };
 

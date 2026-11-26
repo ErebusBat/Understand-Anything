@@ -456,6 +456,7 @@ export const GraphEdgeSchema = z.object({
   })).optional().catch(undefined),
   dependencyEvidence: z.array(z.object({
     kind: z.string(),
+    path: z.string().optional(),
     reference: z.string().optional(),
     line: z.number().int().positive().optional(),
     resolution: z.literal("inferred").optional(),
