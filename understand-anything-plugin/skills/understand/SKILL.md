@@ -413,7 +413,9 @@ This script reads all `batch-*.json` files (including `batch-<i>-part-<k>.json` 
 - Reconciles resolved Ruby method sites across batches and reports distinct method edges, site outcomes and missing callable endpoints in `methodCallSummary`
 - Logs all corrections and dropped items to stderr
 
-The merge script also runs a `tested_by` linker that canonicalizes test-coverage edges in two passes. **Pass 1** walks LLM-emitted `tested_by` edges and flips inverted ones in place; semantically broken edges (test↔test, prod↔prod, orphan endpoints) are dropped. **Pass 2** supplements with path-convention pairings. Production nodes that end up sourcing any `tested_by` edge get a `"tested"` tag. All resulting edges run `production → test`.
+The `tested_by` linker canonicalizes analyzer-proposed associations, adds filename-convention matches and merges resolved RSpec subject evidence. Each edge runs from production to test. Use its `dependencyEvidence` to distinguish the supporting sources. The `tested` tag indicates a static association. Runtime coverage requires execution evidence.
+
+Read `$UA_DIR/intermediate/scan-coverage.json` for parser skips by language, isolated nodes by role and test provenance. When structural artifacts cover only part of the inventory, report the measured subset. Use the method-call merge summary for parsed site outcomes and distinct cross-file edges.
 
 Output: `$UA_DIR/intermediate/assembled-graph.json`
 
