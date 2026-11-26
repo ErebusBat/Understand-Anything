@@ -4,15 +4,53 @@ import { rubyCall, rubyLiteral, walkRuby } from "./ast.js";
 import { safeRubySourcePath } from "./resolver.js";
 import type { DependencyDiagnostic, DependencyFact, RubyDependencyFailure, RubyInventoryFile } from "./types.js";
 
-type Definition = {path: string; line: number; pattern: RegExp | null; prefix: string};
+type StepPattern = {test(text: string): boolean};
+type Definition = {path: string; line: number; pattern: StepPattern | null; prefix: string};
+type StepToken = {literal: string; optional?: boolean} | {char: RegExp; allowEmpty: boolean};
+
+const captures = new Map<string, RegExp>([
+  ["(.*?)", /./], ["(.+?)", /./], ["(.*)", /./], ["(.+)", /./],
+  ["([^:]+)", /[^:]/], ["([^\\/]*)", /[^/]/], ['([^"]*)', /[^"]/], ['([^"]+)', /[^"]/],
+  ["(\\d+)", /[0-9]/], ["(\\d*)", /[0-9]/],
+]);
+
+// Keep only reachable offsets after each token. Adjacent variable-width
+// captures can otherwise make a backtracking regexp retry the same suffix.
+function matchesTokens(tokens: StepToken[], text: string): boolean {
+  let offsets = new Set([0]);
+  for (const token of tokens) {
+    const next = new Set<number>();
+    if ("literal" in token) {
+      for (const start of offsets) {
+        if (token.optional) next.add(start);
+        if (text.startsWith(token.literal, start)) next.add(start + token.literal.length);
+      }
+    } else {
+      for (let i = 0; i <= text.length; i++) {
+        if (token.allowEmpty && offsets.has(i)) next.add(i);
+        if ((offsets.has(i) || next.has(i)) && i < text.length && token.char.test(text[i])) next.add(i + 1);
+      }
+    }
+    if (!next.size) return false;
+    offsets = next;
+  }
+  return offsets.has(text.length);
+}
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Deliberately small, linear regexp subset shared by Ruby and JavaScript.
  * Unsupported patterns remain possible competitors based on their literal
  * prefix. Never execute Ruby or evaluate interpolation. */
-function regexp(source: string): {pattern: RegExp | null; prefix: string} {
+function regexp(source: string): {pattern: StepPattern | null; prefix: string} {
   const body = source.startsWith("/^") ? source.slice(2, source.endsWith("$/") ? -2 : -1) : "";
-  let translated = "", prefix = "", literal = true;
+  const sequence: StepToken[] = [];
+  let prefix = "", literal = true;
+  function appendLiteral(value: string) {
+    const last = sequence[sequence.length - 1];
+    if (last && "literal" in last && !last.optional) last.literal += value;
+    else sequence.push({literal: value});
+    if (literal) prefix += value;
+  }
   if (!source.startsWith("/^") || !source.endsWith("$/")) return {pattern: null, prefix};
   let depth = 0;
   for (let i = 0; i < body.length; i++) {
@@ -21,19 +59,25 @@ function regexp(source: string): {pattern: RegExp | null; prefix: string} {
     if (body[i] === ")") depth--;
     if (body[i] === "|" && depth === 0) return {pattern: null, prefix: ""};
   }
-  const tokens = ["(?:|I )", "(?:I am )?", "(.*?)", "(.+?)", "([^:]+)", "([^\\/]*)", "([^\"]*)", "([^\"]+)", "(.*)", "(.+)", "(\\d+)", "(\\d*)"];
+  const tokens = ["(?:|I )", "(?:I am )?", ...captures.keys()];
   for (let i = 0; i < body.length;) {
-    const token = tokens.find(token => body.startsWith(token, i));
-    if (token) { translated += token; literal = false; i += token.length; continue; }
+    const token = tokens.find(candidate => body.startsWith(candidate, i));
+    if (token) {
+      const char = captures.get(token);
+      if (char) sequence.push({char, allowEmpty: token.includes("*")});
+      else sequence.push({literal: token === "(?:|I )" ? "I " : "I am ", optional: true});
+      literal = false;
+      i += token.length;
+      continue;
+    }
     const char = body[i++];
     if (char === "\\" && i < body.length && /["'\/.$^()[\]{}*+?|\\-]/.test(body[i])) {
       const value = body[i++];
-      translated += escape(value);
-      if (literal) prefix += value;
+      appendLiteral(value);
     } else if (/[.*+?^$()[\]{}|\\]/.test(char)) return {pattern: null, prefix: char === "|" ? "" : /[?*{]/.test(char) ? prefix.slice(0, -1) : prefix};
-    else { translated += escape(char); if (literal) prefix += char; }
+    else appendLiteral(char);
   }
-  return {pattern: new RegExp("^" + translated + "$"), prefix};
+  return {pattern: {test: text => matchesTokens(sequence, text)}, prefix};
 }
 
 export class CucumberSteps {

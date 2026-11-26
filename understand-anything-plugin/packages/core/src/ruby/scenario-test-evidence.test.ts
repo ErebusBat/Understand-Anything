@@ -38,6 +38,14 @@ describe("scenario steps in their owning suite", () => {
     expect(resolver.diagnostics).toContainEqual(expect.objectContaining({path: feature, line: 6, code: "unmatched_cucumber_step"}));
   });
 
+  it("honors optional prefixes and required versus empty captures", () => {
+    const resolver = fixture({
+      [feature]: scenario(" Given I have 123: paid\n And have 5: paid\n And have : paid\n And I have x: paid"),
+      [steps]: 'Given(/^(?:|I )have (\\d+)(\\d*): (.*)paid$/) {}',
+    });
+    expect(resolver.getDependencies(feature).map(fact => fact.line)).toEqual([3, 4]);
+  });
+
   it("rejects duplicate definitions even within one file and accounts for unsupported competitors", () => {
     const resolver = fixture({
       [feature]: scenario("    Given an account\n    And a customer\n    Then I have <n> credits"),
