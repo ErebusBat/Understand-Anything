@@ -75,6 +75,15 @@ export interface GraphEdge {
   type: EdgeType;
   direction: "forward" | "backward" | "bidirectional";
   description?: string;
+  recoveredFromMethodCallMap?: true;
+  methodCallEvidence?: {
+    path: string;
+    line: number;
+    column: number;
+    receiver: string;
+    selector: string;
+    resolution?: "inferred";
+  }[];
   /** Individual source references supporting a deterministic dependency edge. */
   dependencyEvidence?: {
     kind: string;

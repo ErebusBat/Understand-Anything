@@ -66,6 +66,19 @@ describe("schema validation", () => {
     expect(result.issues).toEqual([]);
   });
 
+  it("retains Ruby call sites and their recovery marker when loading a graph", () => {
+    const edge = {
+      ...validGraph.edges[0],
+      type: "calls",
+      recoveredFromMethodCallMap: true,
+      methodCallEvidence: [{
+        path: "app/models/account.rb", line: 21, column: 11,
+        receiver: "Account", selector: "open", resolution: "inferred",
+      }],
+    };
+    expect(validateGraph({ ...validGraph, edges: [edge] }).data?.edges).toEqual([edge]);
+  });
+
   it("rejects graph with missing required fields", () => {
     const incomplete = { version: "1.0.0" };
     const result = validateGraph(incomplete);
