@@ -302,11 +302,12 @@ After the subagent completes, read `$UA_DIR/intermediate/scan-result.json` to ge
 - Complexity estimate
 - Import map (`importMap`): project-internal imports per file, including asset manifest directives
 - Typed dependencies (`dependencyMap`): resolved file facts with `target`, `type`, `kind`, and optional `reference`/`line`; kept separate from explicit imports
+- Ruby method sites (`methodCallMap`) record the receiver outcome, selector location and available caller and callee declarations. Inspect individual file entries as needed.
 - `dependencyContexts` records each Ruby application root and whether dependency inference was blocked.
 - `dependencyDiagnostics`: unsupported and ambiguous static-resolution cases, separate from extraction infrastructure failures
 - `rubyMixinResolution` and `dependencyResolverVersion`: copied from the extractor
 
-Preserve both maps, application contexts, diagnostics, mixin mode, and resolver version in `scan-result.json`. Keep `resolution: "inferred"` on every fact that carries it. Surface dependency diagnostic counts and limitations in the final report without converting them into guessed edges.
+Preserve all three maps, application contexts, diagnostics, mixin mode, and resolver version in `scan-result.json`. Keep `resolution: "inferred"` on every fact that carries it. Surface dependency diagnostic counts and limitations in the final report without converting them into guessed edges.
 Store the file list as `$FILE_LIST` with `fileCategory` metadata for use in Phase 2 batch construction.
 
 **Gate check:** If >100 files, inform the user and suggest scoping with a subdirectory argument. Proceed only if user confirms or add guidance that this may take a while.
@@ -409,6 +410,7 @@ This script reads all `batch-*.json` files (including `batch-<i>-part-<k>.json` 
 - Deduplicates nodes by ID (keeps last occurrence) and edges by `(source, target, type)`
 - Drops dangling edges referencing missing nodes
 - Recovers missing explicit imports and typed file dependencies from the scan maps, using existing whole-file endpoints; stamps matching typed edges with `recoveredFromDependencyMap: true` and preserves fact evidence in `description`
+- Reconciles resolved Ruby method sites across batches and reports distinct method edges, site outcomes and missing callable endpoints in `methodCallSummary`
 - Logs all corrections and dropped items to stderr
 
 The merge script also runs a `tested_by` linker that canonicalizes test-coverage edges in two passes. **Pass 1** walks LLM-emitted `tested_by` edges and flips inverted ones in place; semantically broken edges (test↔test, prod↔prod, orphan endpoints) are dropped. **Pass 2** supplements with path-convention pairings. Production nodes that end up sourcing any `tested_by` edge get a `"tested"` tag. All resulting edges run `production → test`.
@@ -419,7 +421,7 @@ Include the script's warnings in `$PHASE_WARNINGS` for the reviewer.
 
 ### Incremental update path
 
-`prepare-incremental.mjs` has already refreshed the complete file inventory, `importMap`, `dependencyMap`, dependency diagnostics, and resolver version, written the exact analyzer list, and pruned changed/deleted paths and refreshed deterministic relationships from the old graph into `batch-existing.json`. Use the helper's action: a resolver-version upgrade or Ruby context change can require a `PARTIAL_UPDATE` with no analyzer files, so its refreshed facts still pass through deterministic merge.
+`prepare-incremental.mjs` has already refreshed the complete file inventory, `importMap`, `dependencyMap`, `methodCallMap`, dependency diagnostics, and resolver version, written the exact analyzer list, and pruned changed/deleted paths and refreshed deterministic relationships from the old graph into `batch-existing.json`. Use the helper's action: a resolver-version upgrade or Ruby context change can require a `PARTIAL_UPDATE` with no analyzer files, so its refreshed facts still pass through deterministic merge.
 
 1. If `filesToReanalyze` is non-empty, dispatch file-analyzer only for the batches from the incremental `batches.json`, using the same prompt template as the full path. Include `previousSymbols`: the function/class/method node checklist for those files from `incremental-symbol-baseline.json` (IDs, names, types, paths, line ranges, and class containment). Existing symbols that still exist must survive significance filtering; regenerate their semantics from current source. Never add `deletedFiles`, `cosmeticFiles`, `ignoredFiles`, or `generatedArtifactFiles` to a prompt.
 2. If `filesToReanalyze` is empty, dispatch no agent and create no new batch file.
