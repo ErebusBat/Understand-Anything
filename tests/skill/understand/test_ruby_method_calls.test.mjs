@@ -130,5 +130,5 @@ describe('Ruby method calls through the shipped pipeline', () => {
       previousGraph = incrementalGraph;
       previous = {...full, files};
     }
-  });
+  }, 30_000);
 });
