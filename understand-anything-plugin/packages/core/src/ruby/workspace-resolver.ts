@@ -2,6 +2,8 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { RubyDependencyResolver, type RubyDependencyResolverOptions } from "./resolver.js";
 import { isResqueSchedulePath, resqueScheduleDependencies } from "./resque-schedule.js";
+import { CucumberSteps } from "./cucumber-steps.js";
+import { rspecSubjects } from "./rspec-subjects.js";
 import { RailsViewResolver } from "./rails-views.js";
 import { extractRailsRouteDependencies } from "./rails-routes.js";
 import type { DependencyDiagnostic, DependencyFact, RubyDependencyFailure, RubyInventoryFile } from "./types.js";
@@ -29,6 +31,7 @@ export class RubyWorkspaceDependencyResolver {
   private readonly dependencyCache = new Map<string, DependencyFact[]>();
   private readonly contextDiagnostics: DependencyDiagnostic[] = [];
   private readonly prefixes: string[];
+  private readonly cucumber: CucumberSteps;
 
   constructor(private readonly options: RubyDependencyResolverOptions) {
     const files = [...new Map(options.files.filter(f => f.path.endsWith(".rb") || f.language === "ruby" || /(?:^|\/)\.rspec$/.test(f.path)).map(f => [f.path, f])).values()]
@@ -46,6 +49,7 @@ export class RubyWorkspaceDependencyResolver {
     roots.add(""); // Explicit requires and ordinary Ruby outside Rails projects.
     const prefixes = [...roots].sort((a, b) => b.length - a.length || compare(a, b));
     this.prefixes = prefixes;
+    this.cucumber = new CucumberSteps(options.files, options.projectRoot, options.plugin, this.failures);
     const groups = new Map<string, RubyInventoryFile[]>();
     for (const file of files) {
       const prefix = prefixes.find(prefix => file.path.startsWith(prefix))!;
@@ -145,7 +149,7 @@ export class RubyWorkspaceDependencyResolver {
   }
 
   get diagnostics(): DependencyDiagnostic[] {
-    const all = [...this.contextDiagnostics, ...this.projects.flatMap(({prefix, resolver}) =>
+    const all = [...this.contextDiagnostics, ...this.cucumber.diagnostics, ...this.projects.flatMap(({prefix, resolver}) =>
       resolver.diagnostics.map(d => ({
         ...d, path: d.path === null ? null : prefix + d.path,
         ...(d.candidateTarget ? {candidateTarget: prefix + d.candidateTarget} : {}),
@@ -169,10 +173,15 @@ export class RubyWorkspaceDependencyResolver {
     const cached = this.dependencyCache.get(path);
     if (cached) return cached;
     const context = this.owners.get(path);
-    if (!context) return [];
+    if (!context) {
+      const facts = this.cucumber.dependencies(path);
+      this.dependencyCache.set(path, facts);
+      return facts;
+    }
     const {prefix, resolver} = context;
     const localPath = path.slice(prefix.length);
     const facts = [...resolver.getDependencies(localPath), ...context.views.dependencies(localPath),
+      ...rspecSubjects(localPath, resolver, this.options.plugin),
       ...(context.schedules.get(localPath) ?? [])];
     const source = resolver.sources.get(localPath);
     if (source !== undefined && resolver.isRails && /(^|\/)config\/routes\.rb$/.test(localPath)) {

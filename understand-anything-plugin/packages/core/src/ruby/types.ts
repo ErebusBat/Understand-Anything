@@ -5,7 +5,7 @@ export interface DependencyFact {
   target: string;
   type: "depends_on" | "inherits" | "routes";
   kind: "constant" | "superclass" | "include" | "extend" | "association" | "route" | "render" | "layout" | "grape_helper"
-    | "rspec_shared_group" | "factory" | "factory_association" | "factory_sequence" | "serializer" | "validator" | "file_read" | "resque_schedule" | "vcr_cassette";
+    | "rspec_shared_group" | "rspec_subject" | "cucumber_step" | "mailer_template" | "factory" | "factory_association" | "factory_sequence" | "serializer" | "validator" | "file_read" | "resque_schedule" | "vcr_cassette";
   reference?: string;
   line?: number;
   /** The source identifies a local candidate through a convention or uninspected ancestry. */

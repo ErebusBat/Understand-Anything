@@ -140,6 +140,7 @@ interface Controller {
 export class RailsViewResolver {
   private readonly templates = new Map<string, string | null>();
   private readonly viewSources = new Map<string, string>();
+  private readonly mailerCache = new Map<string, DependencyFact[]>();
   private readonly controllers = new Map<string, Controller | null>();
 
   constructor(views: string[], projectRoot: string, private readonly resolver: RubyDependencyResolver,
@@ -264,6 +265,88 @@ export class RailsViewResolver {
     return overridesDefaultRender ? controller.facts.filter(fact => !fact.resolution) : controller.facts;
   }
 
+  private mailerAncestry(path: string, name: string, seen = new Set<string>()): boolean {
+    if (seen.has(path)) return false;
+    seen.add(path);
+    const source = this.resolver.sources.get(path);
+    if (source === undefined || this.resolver.resolveConstant("::" + name, {path}) !== path) return false;
+    return this.plugin.withSyntaxTree(path, source, root => {
+      const node = findClass(root, name), body = node?.childForFieldName("body");
+      if (!node || (body && lookupOverridden(body))) return false;
+      // Template defaults and name overrides redirect ActionMailer's lookup.
+      for (const statement of rubyStatements(body)) {
+        const call = rubyCall(statement);
+        if (statement.type === "singleton_method" && ["mailer_name", "default"].includes(statement.childForFieldName("name")?.text ?? "")) return false;
+        if (call?.method === "default" && !call.receiver) {
+          const pairs = call.args.flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg]);
+          if (pairs.some(pair => pair.type !== "pair" || ["template_name", "template_path", "body"].includes(String(rubyLiteral(pair.childForFieldName("key")))))) return false;
+        }
+      }
+      const superclass = node.childForFieldName("superclass")?.namedChildren[0];
+      const base = rubyConstant(superclass);
+      if (!base) return false;
+      // Superclasses resolve in the declaration's enclosing lexical scopes,
+      // not in the class body and not always at the workspace root.
+      const ancestors: RubyAstNode[] = [];
+      for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+        if (ancestor.type === "class" || ancestor.type === "module") ancestors.unshift(ancestor);
+      }
+      const nesting: string[] = [];
+      for (const ancestor of ancestors) {
+        const raw = rubyConstant(ancestor.childForFieldName("name"));
+        if (!raw) return false;
+        nesting.unshift(raw.startsWith("::") ? raw.slice(2) : nesting[0] ? nesting[0] + "::" + raw : raw);
+      }
+      const parent = this.resolver.resolveConstant(base, {path, nesting, line: superclass!.startPosition.row + 1});
+      if (!parent) return base.replace(/^::/, "") === "ActionMailer::Base";
+      const candidates = base.startsWith("::") ? [base.slice(2)] : [...nesting.map(scope => scope + "::" + base), base];
+      const parentName = candidates.find(candidate => this.resolver.resolveConstant("::" + candidate, {path}) === parent);
+      return !!parentName && this.mailerAncestry(parent, parentName, seen);
+    });
+  }
+
+  private mailerDependencies(path: string): DependencyFact[] {
+    const cached = this.mailerCache.get(path);
+    if (cached) return cached;
+    const prefix = /^app\/mailers\/((?:[a-z0-9_]+\/)*[a-z0-9_]+)\.rb$/.exec(path)?.[1];
+    const name = prefix && this.resolver.camelize(prefix);
+    if (!prefix || !name || !this.mailerAncestry(path, name)) return [];
+    const facts = this.plugin.withSyntaxTree(path, this.resolver.sources.get(path)!, root => {
+      const body = findClass(root, name)!.childForFieldName("body");
+      const facts: DependencyFact[] = [];
+      for (const method of rubyStatements(body)) {
+        if (method.type !== "method") continue;
+        const action = method.childForFieldName("name")?.text;
+        if (!action) continue;
+        const methodBody = method.childForFieldName("body");
+        if (!methodBody) continue;
+        walkRuby(methodBody, node => {
+          if (["block", "do_block", "lambda", "class", "module", "method", "singleton_method"].includes(node.type)) return false;
+          const call = rubyCall(node);
+          if (!call || call.receiver || call.method !== "mail" || call.block) return;
+          const options = new Map<string, RubyAstNode>();
+          for (const pair of call.args.flatMap(arg => arg.type === "hash" ? rubyStatements(arg) : [arg])) {
+            const key = pair.type === "pair" && rubyLiteral(pair.childForFieldName("key"));
+            const value = pair.childForFieldName("value");
+            if (typeof key !== "string" || !value || options.has(key)) return;
+            options.set(key, value);
+          }
+          if (options.has("body")) return;
+          const template = options.has("template_name") ? rubyLiteral(options.get("template_name")) : action;
+          const directory = options.has("template_path") ? rubyLiteral(options.get("template_path")) : prefix;
+          if (typeof template !== "string" || template.includes("/") || !VIEW_NAME.test(template)
+            || typeof directory !== "string" || !VIEW_NAME.test(directory)) return;
+          const target = this.templates.get(directory + "/" + template);
+          if (target) facts.push({target, type: "depends_on", kind: "mailer_template", reference: directory + "/" + template,
+            line: node.startPosition.row + 1, resolution: "inferred"});
+        });
+      }
+      return facts;
+    });
+    this.mailerCache.set(path, facts);
+    return facts;
+  }
+
   private renderingControllerPrefix(path: string): string | null {
     const view = /^app\/views\/((?:[a-z0-9_]+\/)*[a-z0-9_]+)\/([a-z0-9][\w-]*)\.(?:html\.)?(?:erb|haml|slim)$/.exec(path);
     if (!view) return null;
@@ -272,12 +355,13 @@ export class RailsViewResolver {
     // with this directory first in its lookup prefixes. Shared partials and
     // layouts do not establish the caller of an unqualified partial.
     const host = this.controllerDependencies("app/controllers/" + prefix + "_controller.rb");
-    return host.some(fact => fact.kind === "render" && fact.target === path) ? prefix : null;
+    if (host.some(fact => fact.kind === "render" && fact.target === path)) return prefix;
+    return this.mailerDependencies("app/mailers/" + prefix + ".rb").some(fact => fact.target === path) ? prefix : null;
   }
 
   dependencies(path: string): DependencyFact[] {
     const source = this.viewSources.get(path);
-    if (source === undefined) return this.controllerDependencies(path);
+    if (source === undefined) return [...this.controllerDependencies(path), ...this.mailerDependencies(path)];
     const facts = new Map<string, DependencyFact>();
     let prefix: string | null | undefined;
     for (const {name, line} of templatePartials(this.plugin, path, source)) {
