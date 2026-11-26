@@ -7,6 +7,7 @@ export interface RubyMethodSymbol {
   dispatch: "singleton" | "instance";
   line: number;
   endLine: number;
+  column?: number;
 }
 export interface RubyMethodSite {
   caller?: RubyMethodSymbol;
@@ -53,11 +54,13 @@ export function collectRubyMethodCalls(root: RubyAstNode): {symbols: RubyMethodS
         dispatch: singleton ? "singleton" : "instance",
         line: node.startPosition.row + 1,
         endLine: node.endPosition.row + 1,
+        column: node.startPosition.column + 1,
       };
       symbols.push(caller);
     }
     const call = rubyCall(node);
     if (call) {
+      const selector = node.childForFieldName("method")!;
       const receiver = rubyConstant(call.receiver);
       sites.push({
         ...(caller && { caller }),
@@ -65,8 +68,8 @@ export function collectRubyMethodCalls(root: RubyAstNode): {symbols: RubyMethodS
         ...(receiver && { receiver }),
         selector: call.method,
         dispatch: receiver ? "constant" : call.receiver ? "dynamic" : "implicit",
-        line: node.startPosition.row + 1,
-        column: node.startPosition.column + 1,
+        line: selector.startPosition.row + 1,
+        column: selector.startPosition.column + 1,
         offset: node.startIndex,
       });
     }

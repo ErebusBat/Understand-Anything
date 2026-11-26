@@ -140,7 +140,8 @@ function dependencyRefreshPaths({ previousScan, currentScan, graph, changedPaths
   const candidatePaths = new Set(candidates);
   const versionChanged = previousScan?.dependencyResolverVersion !== RUBY_DEPENDENCY_RESOLVER_VERSION;
   const modeChanged = previousScan?.rubyMixinResolution !== rubyMixinResolution;
-  const missingEntries = dependencyPaths.some(path => !Array.isArray(previousScan?.dependencyMap?.[path]));
+  const missingEntries = dependencyPaths.some(path => !Array.isArray(previousScan?.dependencyMap?.[path])
+    || (isRubyPath(path) && !Array.isArray(previousScan?.methodCallMap?.[path])));
   // A declaration, association, root, or inflection can change resolution in
   // an unchanged consumer. Fingerprint STRUCTURAL/COSMETIC is not sufficient.
   const contextChanged = inventoryChanged || changedPaths.some(path => isRubyPath(path) || basename(path) === '.rspec')
@@ -458,6 +459,7 @@ function refreshDependencyData({ previousScan, currentScan, extraction, refreshP
     }
   }
   const dependencyMap = {};
+  const methodCallMap = {};
   for (const path of sorted(currentPaths)) {
     // An empty refreshed entry is authoritative: never merge old facts back in.
     const candidate = refreshedPaths.has(path)
@@ -474,6 +476,11 @@ function refreshDependencyData({ previousScan, currentScan, extraction, refreshP
       if (Number.isInteger(fact.line) && fact.line > 0) normalized.line = fact.line;
       facts.set(JSON.stringify(normalized), normalized);
     }
+    // Method sites are authoritative outcomes, including empty and unresolved
+    // entries. Recompute unchanged callers whenever the Ruby context changes.
+    const methodSites = refreshedPaths.has(path) ? extraction?.methodCallMap?.[path] : previousScan?.methodCallMap?.[path];
+    methodCallMap[path] = (Array.isArray(methodSites) ? methodSites : []).filter(site =>
+      !site.target || currentPaths.has(site.target));
     dependencyMap[path] = [...facts].sort(([a], [b]) => comparePaths(a, b)).map(([, fact]) => fact);
   }
 
@@ -502,6 +509,7 @@ function refreshDependencyData({ previousScan, currentScan, extraction, refreshP
   }
   return {
     dependencyMap,
+    methodCallMap,
     dependencyContexts: contextRefreshed ? extraction?.dependencyContexts ?? [] : previousScan?.dependencyContexts ?? [],
     dependencyDiagnostics: [...diagnostics].sort(([a], [b]) => comparePaths(a, b)).map(([, value]) => value),
     dependencyResolverVersion: RUBY_DEPENDENCY_RESOLVER_VERSION,
@@ -589,12 +597,14 @@ function pruneExistingGraph(graph, pathsToReplace, importPathsToRefresh = new Se
       }
     }
   }
+  const methodSourcePaths = new Map((graph?.nodes ?? []).map(node => [node.id, node.filePath]));
   const retainedIds = new Set(nodes.map(node => node.id));
   const edges = (graph?.edges ?? []).filter(
     edge =>
       !removedNodeIds.has(edge.source)
       && !removedNodeIds.has(edge.target)
       && !(edge.type === 'imports' && refreshedImportSourceIds.has(edge.source))
+      && !((edge.recoveredFromMethodCallMap || edge.methodCallEvidence?.length) && dependencyPathsToRefresh.has(methodSourcePaths.get(edge.source)))
       && !isRefreshedDependency(edge)
       && retainedIds.has(edge.source)
       && retainedIds.has(edge.target),

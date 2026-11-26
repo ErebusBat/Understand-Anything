@@ -182,7 +182,9 @@ The output JSON has shape:
 }
 ```
 
-Copy `importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, and `rubyMixinResolution` verbatim into the final scan-result.json under the same keys. Both maps use the same project-relative file paths and have entries for every input file; arrays may be empty. `importMap` contains explicit resolved internal imports only. Keep typed facts separate.
+Copy `importMap`, `dependencyMap`, `methodCallMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, and `rubyMixinResolution` verbatim into the final scan-result.json under the same keys. All three maps use the same project-relative file paths and have entries for every input file; arrays may be empty. `importMap` contains explicit resolved internal imports only. Keep typed facts separate.
+
+`methodCallMap` contains Ruby method sites, caller/callee declaration identities, receiver outcomes and source locations; merge reconciles these facts after all batches.
 
 Each `dependencyMap[sourceFilePath]` value is an array of `{ target: string, type: "depends_on" | "inherits" | "routes", kind: string, reference?: string, line?: number, resolution?: "inferred" }`. Copy each fact’s `kind`, source line, reference, and optional `resolution: "inferred"` from the extractor. Route references can include a configuration guard. These are file-level relationships. The core constant `RUBY_DEPENDENCY_RESOLVER_VERSION` supplies `dependencyResolverVersion`.
 
@@ -200,12 +202,12 @@ Report the count, path, and stage of any entries in the extractor’s `failures`
 
 After Steps A + B + C have all completed, read:
 1. `$UA_DIR/tmp/ua-scan-files.json` — output of `scan-project.mjs` (file list with language, sizeLines, fileCategory; plus `totalFiles`, `filteredByIgnore`, `estimatedComplexity`).
-2. `$UA_DIR/tmp/ua-import-map-output.json` — output of `extract-import-map.mjs` (`importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, `rubyMixinResolution`).
+2. `$UA_DIR/tmp/ua-import-map-output.json` — output of `extract-import-map.mjs` (`importMap`, `dependencyMap`, `methodCallMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, `rubyMixinResolution`).
 3. Your Step A in-memory notes (`name`, `rawDescription`, `readmeHead`, `frameworks`, `languages` narrative).
 
 Do NOT re-walk the file tree, re-count lines, or re-derive categories — trust `scan-project.mjs` entirely. Do NOT re-implement import resolution — trust `extract-import-map.mjs` entirely.
 
-**IMPORTANT:** The final output must NOT contain the `scriptCompleted` or `stats` fields from either bundled script, nor your transient `rawDescription` / `readmeHead` work-strings. Strip them when assembling the final JSON. The final `importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, and `rubyMixinResolution` MUST equal their fields from `extract-import-map.mjs` verbatim (do not edit, re-sort, or filter them). The final `files` array MUST equal Step B's `files` array verbatim (do not re-order, drop, or augment it). Copy Step B's `contentDigest` into the final scan.
+**IMPORTANT:** The final output must NOT contain the `scriptCompleted` or `stats` fields from either bundled script, nor your transient `rawDescription` / `readmeHead` work-strings. Strip them when assembling the final JSON. The final `importMap`, `dependencyMap`, `methodCallMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, and `rubyMixinResolution` MUST equal their fields from `extract-import-map.mjs` verbatim (do not edit, re-sort, or filter them). The final `files` array MUST equal Step B's `files` array verbatim (do not re-order, drop, or augment it). Copy Step B's `contentDigest` into the final scan.
 
 Your only synthesis task in this phase is the final `description` field:
 
@@ -254,6 +256,7 @@ Then assemble the final output JSON:
 - `estimatedComplexity` (string): directly from Step B
 - `importMap` (object): directly from Step C's `importMap` field
 - `dependencyMap` (object): directly from Step C's typed file dependencies
+- `methodCallMap` (object): directly from Step C's Ruby method-site facts
 - `dependencyContexts` (object[]): copy each application's `root`, `isRails`, and `blocked` status from Step C
 - `dependencyDiagnostics` (object[]): directly from Step C, including unsupported and ambiguous cases
 - `dependencyResolverVersion` (integer): directly from Step C
@@ -264,7 +267,7 @@ Then assemble the final output JSON:
 - NEVER invent or guess file paths. Every `path` in the `files` array must come from `scan-project.mjs`'s output (which itself comes from `git ls-files` or a real directory listing).
 - NEVER include files that do not exist on disk.
 - ALWAYS validate that `totalFiles` matches the actual length of the `files` array.
-- Trust Step B for file enumeration + language detection + category assignment + line counts + complexity. Trust Step C for both dependency maps, diagnostics, and resolver version. Your only synthesis is the `description` field (plus the Step A narrative fields: `name`, `frameworks`, `languages`).
+- Trust Step B for file enumeration + language detection + category assignment + line counts + complexity. Trust Step C for import, dependency and method-call maps, diagnostics, and resolver version. Your only synthesis is the `description` field (plus the Step A narrative fields: `name`, `frameworks`, `languages`).
 - Do NOT re-implement file enumeration, language detection, or category assignment in your discovery script. Use the bundled `scan-project.mjs`. If the table doesn't cover your project type, file an issue rather than ad-hoc handling.
 - Do NOT attempt to re-implement import resolution. The bundled `extract-import-map.mjs` handles all 13 supported code languages (TS, JS, Python, Go, Rust, Java, Kotlin, Scala, C#, Ruby, PHP, C, C++) deterministically via tree-sitter + per-language resolvers.
 - Every file MUST have a `fileCategory` field with one of: `code`, `config`, `docs`, `infra`, `data`, `script`, `markup` — `scan-project.mjs` guarantees this; just don't strip it.

@@ -24,7 +24,7 @@
  *
  * `files` is always the complete current inventory because import resolution
  * needs it for path/module probes. When `analysisPaths` is present, only those
- * files are emitted in `importMap` and `dependencyMap`. Ruby indexing reads the
+ * files are emitted in `importMap`, `dependencyMap`, and `methodCallMap`. Ruby indexing reads the
  * full inventory to resolve unchanged declarations/configuration. Omitting
  * analysisPaths preserves full-scan behaviour.
  *
@@ -34,6 +34,7 @@
  *     stats: { filesScanned, filesWithImports, totalEdges },
  *     importMap: { <path>: [<resolvedPath>, ...], ... },
  *     dependencyMap: { <path>: [{ target, type, kind, reference?, line?, resolution? }, ...] },
+ *     methodCallMap: { <path>: [<RubyMethodCallFact>, ...] },
  *     dependencyDiagnostics: [{ path, code, message, line?, candidateTarget? }, ...],
  *     dependencyContexts: [{ root, isRails, blocked }, ...],
  *     rubyMixinResolution: "pragmatic" | "strict",
@@ -2010,6 +2011,7 @@ async function main() {
       failures: [],
       importMap: {},
       dependencyMap: {},
+      methodCallMap: {},
       dependencyContexts: [],
       dependencyDiagnostics: [],
       rubyMixinResolution,
@@ -2093,8 +2095,10 @@ async function main() {
   }, customTemplateScopes);
   const realProjectRoot = rubyResolver ? realpathSync(projectRoot) : null;
   const dependencyMap = {};
+  const methodCallMap = {};
   for (const file of [...analysisFiles].sort((a, b) => comparePaths(a.path, b.path))) {
     const path = toPosix(file.path);
+    methodCallMap[path] = rubyResolver?.getMethodCalls(path) ?? [];
     dependencyMap[path] = file.language === 'ruby' || (file.fileCategory === 'code' && path.endsWith('.rb')) || path.includes('app/views/') || path.endsWith('.feature') || isResqueSchedulePath(path)
       ? rubyResolver?.getDependencies(path) ?? []
       : [];
@@ -2230,6 +2234,7 @@ async function main() {
     failures,
     importMap,
     dependencyMap,
+    methodCallMap,
     dependencyContexts: rubyResolver?.contexts ?? [],
     dependencyDiagnostics: rubyResolver?.diagnostics ?? [],
     rubyMixinResolution,

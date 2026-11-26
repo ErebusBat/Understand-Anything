@@ -21,6 +21,11 @@ describe("Ruby method-site evidence", () => {
     expect(plugin.extractCallGraph("example.rb", source)[0]).toEqual({caller: "run", callee: "Target.call", lineNumber: 3});
   });
 
+  it("locates chained selectors independently when the call nodes share a receiver start", () => {
+    const sites = extract("def caller; input.merge(one).merge(two); end").sites;
+    expect(sites.filter(site => site.selector === "merge").map(site => site.column)).toEqual([30, 19]);
+  });
+
   it("retains named helpers and class-body sites without attributing runtime DSL methods to a lexical owner", () => {
     const {sites} = extract("class Api\n helpers { def helper; Target.call; end }\n before { Permission.dynamic }\n included { def installed; Target.call; end }\n class << other\n def runtime; Target.call; end\n end\nend");
     expect(sites.find(s => s.caller?.name === "helper")?.caller?.owner).toBe("Api");

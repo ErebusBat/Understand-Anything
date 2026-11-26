@@ -74,7 +74,7 @@ describe('incremental execution contract', () => {
   });
 
   it('preserves extractor facts verbatim in scanning and keeps imports separate in analysis', () => {
-    expect(scanner).toContain('`importMap`, `dependencyMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, and `rubyMixinResolution` MUST equal');
+    expect(scanner).toContain('`importMap`, `dependencyMap`, `methodCallMap`, `dependencyContexts`, `dependencyDiagnostics`, `dependencyResolverVersion`, and `rubyMixinResolution` MUST equal');
     expect(scanner).toContain('RUBY_DEPENDENCY_RESOLVER_VERSION');
     expect(scanner).toContain('extraction infrastructure failures');
     expect(analyzer).toContain('a typed-only fact produces no import edge');
