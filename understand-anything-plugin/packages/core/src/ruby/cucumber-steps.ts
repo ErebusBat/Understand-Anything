@@ -71,7 +71,7 @@ function regexp(source: string): {pattern: StepPattern | null; prefix: string} {
       continue;
     }
     const char = body[i++];
-    if (char === "\\" && i < body.length && /["'\/.$^()[\]{}*+?|\\-]/.test(body[i])) {
+    if (char === "\\" && i < body.length && /["'/.$^()[\]{}*+?|\\-]/.test(body[i])) {
       const value = body[i++];
       appendLiteral(value);
     } else if (/[.*+?^$()[\]{}|\\]/.test(char)) return {pattern: null, prefix: char === "|" ? "" : /[?*{]/.test(char) ? prefix.slice(0, -1) : prefix};
